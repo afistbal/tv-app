@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Error</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+        .container {
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .content {
+            font-size: 16px;
+        }
+        .button {
+            width: 120px;
+            height: 48px;
+            font-size: 14px;
+            background-color: red;
+            border-radius: 24px;
+            border: none;
+            color: white;
+        }
+    </style>
+    <script>
+        function goHome() {
+            document.querySelector('.container').innerHTML = 'loading...';
+            window.flutter_inappwebview.callHandler('goHome');
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="content">Oops! Something went wrong.</div>
+        <button type="button" class="button" onclick="goHome()">Reload</button>
+    </div>
+</body>
+</html>

@@ -1,0 +1,13 @@
+#dart run flutter_native_splash:create
+
+flutter_native_splash:
+  android: true
+  ios: true
+  web: false
+  color: "#000000"
+  image: assets/images/splash.png
+  image_ios: assets/images/splash.png
+  android_12:
+    image: assets/images/splash.png
+  android_gravity: fill|clip_vertical
+  ios_content_mode: center

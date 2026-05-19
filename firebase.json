@@ -1,0 +1,22 @@
+{
+    "flutter": {
+        "platforms": {
+            "android": {
+                "default": {
+                    "projectId": "yogotv-639cd",
+                    "appId": "1:1060307128443:android:3a4056d3dc021bbd0b92de",
+                    "fileOutput": "android/app/google-services.json"
+                }
+            },
+            "dart": {
+                "lib/firebase_options.dart": {
+                    "projectId": "yogotv-639cd",
+                    "configurations": {
+                        "android": "1:1060307128443:android:3a4056d3dc021bbd0b92de",
+                        "ios": "1:1060307128443:ios:13ca59a36c37df970b92de"
+                    }
+                }
+            }
+        }
+    }
+}

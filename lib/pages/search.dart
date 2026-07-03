@@ -1,115 +1,862 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
+import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
-import 'package:yogotv/widgets/film_item.dart';
 
 class Search extends StatefulWidget {
   const Search({super.key});
 
   @override
-  State<StatefulWidget> createState() {
-    return _Search();
-  }
+  State<Search> createState() => _Search();
 }
 
 class _Search extends State<Search> {
+  static const _historyKey = 'search_video_keywords';
+
+  final _controller = TextEditingController();
   final _focusNode = FocusNode();
-  List<dynamic> _list = [];
+  final _scrollController = ScrollController();
+
+  Timer? _searchTimer;
+  List<dynamic> _results = [];
+  List<dynamic> _popular = [];
+  List<String> _history = [];
+
+  int _page = 1;
+  bool _expandedHistory = false;
   bool _loading = false;
-  bool _noContent = false;
+  bool _loadingPopular = true;
+  bool _requesting = false;
+  bool _hasNext = false;
+  bool _searched = false;
 
   @override
   void initState() {
     super.initState();
+    _history = Global.sp.getStringList(_historyKey) ?? [];
+    _scrollController.addListener(_onScroll);
+    _controller.addListener(_onKeywordChanged);
+    _loadPopular();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _focusNode.requestFocus();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchTimer?.cancel();
+    _controller.removeListener(_onKeywordChanged);
+    _controller.dispose();
+    _focusNode.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onKeywordChanged() {
+    _searchTimer?.cancel();
+    final keyword = _controller.text.trim();
+    if (keyword.isEmpty) {
+      setState(() {
+        _searched = false;
+        _loading = false;
+        _requesting = false;
+        _results = [];
+        _hasNext = false;
+        _page = 1;
+      });
+      return;
+    }
+    _searchTimer = Timer(Duration(seconds: 1), () {
+      _search(keyword, page: 1);
+    });
+  }
+
+  void _onScroll() {
+    if (!_searched || !_hasNext || _loading || _requesting) {
+      return;
+    }
+    if (!_scrollController.hasClients) {
+      return;
+    }
+    final position = _scrollController.position;
+    if (position.maxScrollExtent - position.pixels < 420) {
+      _search(_controller.text.trim(), page: _page + 1);
+    }
+  }
+
+  Future<void> _loadPopular() async {
+    setState(() {
+      _loadingPopular = true;
+    });
+    final result = await api<Map<String, dynamic>>(
+      'feed/search_feed',
+      method: Method.post,
+      data: {'page': 1},
+      loading: false,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _popular = _pageItems(result.d);
+      _loadingPopular = false;
+    });
+  }
+
+  Future<void> _search(String keyword, {required int page}) async {
+    if (keyword.isEmpty || _requesting) {
+      return;
+    }
+
+    if (page == 1) {
+      await _addHistory(keyword);
+      setState(() {
+        _searched = true;
+        _loading = true;
+        _requesting = true;
+        _page = 1;
+        _hasNext = false;
+        _results = [];
+      });
+    } else {
+      setState(() {
+        _requesting = true;
+      });
+    }
+
+    final result = await api<Map<String, dynamic>>(
+      'movie',
+      method: Method.post,
+      data: {'page': page, 'keyword': keyword, 'tag': ''},
+      loading: false,
+    );
+
+    if (!mounted || keyword != _controller.text.trim()) {
+      return;
+    }
+
+    final items = _pageItems(result.d);
+    setState(() {
+      if (page == 1) {
+        _results = items;
+      } else {
+        _results = [..._results, ...items];
+      }
+      _page = _pageNumber(result.d, page);
+      _hasNext = _hasNextPage(result.d, items);
+      _loading = false;
+      _requesting = false;
+      _searched = true;
+    });
+  }
+
+  Future<void> _addHistory(String keyword) async {
+    final normalized = keyword.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final next = [
+      normalized,
+      ..._history.where(
+        (item) => item.toLowerCase() != normalized.toLowerCase(),
+      ),
+    ].take(12).toList();
+    await Global.sp.setStringList(_historyKey, next);
+    if (mounted) {
+      setState(() {
+        _history = next;
+      });
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Color(0xff1f1f1f),
+          title: Text(t.delete_search_history),
+          content: Text(
+            t.clear_search_history_des,
+            style: TextStyle(color: Color(0xffcccccc), fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(t.cancel),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(t.confirm),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+    await Global.sp.remove(_historyKey);
+    if (mounted) {
+      setState(() {
+        _history = [];
+        _expandedHistory = false;
+      });
+    }
+  }
+
+  void _submit([String? value]) {
+    final keyword = (value ?? _controller.text).trim();
+    if (keyword.isEmpty) {
+      return;
+    }
+    _searchTimer?.cancel();
+    _focusNode.unfocus();
+    _search(keyword, page: 1);
+  }
+
+  void _searchHistoryItem(String keyword) {
+    _searchTimer?.cancel();
+    _controller.text = keyword;
+    _controller.selection = TextSelection.collapsed(offset: keyword.length);
+    _focusNode.unfocus();
+    _search(keyword, page: 1);
   }
 
   @override
   Widget build(BuildContext context) {
-    final width = (MediaQuery.of(context).size.width - 48) / 2;
-    final height = width / 3 * 4;
-
     return Scaffold(
-      appBar: AppBar(title: Text(t.search)),
-      body: Column(
-        children: [
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: TextField(
-              onSubmitted: (value) async {
-                setState(() {
-                  _loading = true;
-                });
-                final result = await api(
-                  'movie',
-                  query: {'keyword': value.trim()},
-                );
-
-                setState(() {
-                  _list = result.d['data'];
-                  _noContent = result.d['data'].length == 0;
-                  _loading = false;
-                });
-              },
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _Toolbar(
+              controller: _controller,
               focusNode: _focusNode,
-              keyboardType: TextInputType.text,
-              maxLength: 32,
-              autofocus: true,
-              onTapOutside: (_) {
-                FocusManager.instance.primaryFocus?.unfocus();
+              onBack: () => context.pop(),
+              onSubmit: _submit,
+              onClear: () {
+                _searchTimer?.cancel();
+                _controller.clear();
               },
-              decoration: InputDecoration(
-                hintText: t.search_placeholder,
-                counterText: '',
-                suffixIcon: Icon(LucideIcons.search, color: Colors.white54),
-              ),
             ),
-          ),
-          _loading || _noContent
-              ? Padding(
-                  padding: EdgeInsets.all(16),
-                  child: _noContent
-                      ? Center(
-                          child: Text(
-                            t.no_search_result,
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 16,
-                            ),
-                          ),
-                        )
-                      : Loading(),
-                )
-              : Expanded(
-                  child: GridView.builder(
-                    padding: EdgeInsets.only(
-                      top: 16,
-                      left: 16,
-                      bottom: 32,
-                      right: 16,
-                    ),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                      mainAxisExtent: height + 52,
-                    ),
-                    itemCount: _list.length,
-                    itemBuilder: (context, index) {
-                      return FilmItem(
-                        id: _list[index]['id'],
-                        width: width,
-                        height: height,
-                        image: _list[index]['image'],
-                        title: _list[index]['title'],
-                        recommend: false,
-                      );
+            Expanded(child: _searched ? _buildResultList() : _buildLanding()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLanding() {
+    return RefreshIndicator(
+      onRefresh: _loadPopular,
+      color: Colors.white,
+      backgroundColor: Color(0xff222222),
+      child: CustomScrollView(
+        physics: AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverPadding(
+            padding: EdgeInsets.symmetric(horizontal: 15),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                if (_history.isNotEmpty) ...[
+                  _HistoryHeader(
+                    expanded: _expandedHistory,
+                    showExpand: _history.length > 6,
+                    onClear: _clearHistory,
+                    onToggle: () {
+                      setState(() {
+                        _expandedHistory = !_expandedHistory;
+                      });
                     },
                   ),
-                ),
+                  _HistoryGrid(
+                    items: _history.take(_expandedHistory ? 12 : 6).toList(),
+                    onTap: _searchHistoryItem,
+                  ),
+                ],
+                if (_loadingPopular)
+                  Padding(padding: EdgeInsets.only(top: 80), child: Loading())
+                else if (_popular.isNotEmpty) ...[
+                  Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Text(
+                      t.popular_now,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        height: 1.2,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  _PopularGrid(items: _popular),
+                  SizedBox(height: 32),
+                ],
+              ]),
+            ),
+          ),
         ],
       ),
     );
   }
+
+  Widget _buildResultList() {
+    if (_loading) {
+      return Center(child: Loading());
+    }
+    if (_results.isEmpty) {
+      return _SearchEmpty();
+    }
+    return RefreshIndicator(
+      onRefresh: () => _search(_controller.text.trim(), page: 1),
+      color: Colors.white,
+      backgroundColor: Color(0xff222222),
+      child: ListView.builder(
+        controller: _scrollController,
+        physics: AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.only(top: 4, bottom: 28),
+        itemCount: _results.length + (_requesting && _page > 1 ? 1 : 0),
+        itemBuilder: (context, index) {
+          if (index >= _results.length) {
+            return Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: Loading()),
+            );
+          }
+          return _SearchResultItem(item: _results[index]);
+        },
+      ),
+    );
+  }
+}
+
+class _Toolbar extends StatelessWidget {
+  const _Toolbar({
+    required this.controller,
+    required this.focusNode,
+    required this.onBack,
+    required this.onSubmit,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onBack;
+  final ValueChanged<String> onSubmit;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 15),
+        child: Row(
+          children: [
+            InkWell(
+              onTap: onBack,
+              borderRadius: BorderRadius.circular(18),
+              child: SizedBox(
+                width: 24,
+                height: 36,
+                child: Icon(
+                  LucideIcons.chevronLeft,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+            ),
+            SizedBox(width: 15),
+            Expanded(
+              child: Container(
+                height: 36,
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: Color(0xff151515),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      LucideIcons.search,
+                      color: Color(0xff999999),
+                      size: 16,
+                    ),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        maxLength: 32,
+                        textInputAction: TextInputAction.done,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.1,
+                        ),
+                        cursorColor: Colors.white,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          counterText: '',
+                          border: InputBorder.none,
+                          hintText: t.search_anything_you_like,
+                          hintStyle: TextStyle(
+                            color: Color(0xff999999),
+                            fontSize: 14,
+                          ),
+                        ),
+                        onSubmitted: onSubmit,
+                        onTapOutside: (_) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                        },
+                      ),
+                    ),
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: controller,
+                      builder: (context, value, child) {
+                        if (value.text.isEmpty) {
+                          return SizedBox.shrink();
+                        }
+                        return InkWell(
+                          onTap: onClear,
+                          borderRadius: BorderRadius.circular(12),
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(
+                              LucideIcons.x,
+                              color: Color(0xff999999),
+                              size: 16,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HistoryHeader extends StatelessWidget {
+  const _HistoryHeader({
+    required this.expanded,
+    required this.showExpand,
+    required this.onClear,
+    required this.onToggle,
+  });
+
+  final bool expanded;
+  final bool showExpand;
+  final VoidCallback onClear;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              t.search_history,
+              style: TextStyle(
+                color: Color(0xff999999),
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          InkWell(
+            onTap: onClear,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: EdgeInsets.all(3),
+              child: Icon(
+                LucideIcons.trash2,
+                color: Color(0xff999999),
+                size: 18,
+              ),
+            ),
+          ),
+          if (showExpand) ...[
+            Container(
+              width: 1,
+              height: 12,
+              margin: EdgeInsets.symmetric(horizontal: 10),
+              color: Color(0xff666666),
+            ),
+            InkWell(
+              onTap: onToggle,
+              borderRadius: BorderRadius.circular(14),
+              child: AnimatedRotation(
+                turns: expanded ? 0.5 : 0,
+                duration: Duration(milliseconds: 300),
+                child: Padding(
+                  padding: EdgeInsets.all(3),
+                  child: Icon(
+                    LucideIcons.chevronDown,
+                    color: Color(0xff999999),
+                    size: 18,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _HistoryGrid extends StatelessWidget {
+  const _HistoryGrid({required this.items, required this.onTap});
+
+  final List<String> items;
+  final ValueChanged<String> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 10),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final itemWidth = (constraints.maxWidth - 15) / 2;
+          return Wrap(
+            spacing: 15,
+            runSpacing: 8,
+            children: items.map((item) {
+              return InkWell(
+                onTap: () => onTap(item),
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: itemWidth,
+                  height: 24,
+                  child: Row(
+                    children: [
+                      Icon(
+                        LucideIcons.history,
+                        color: Color(0xff999999),
+                        size: 16,
+                      ),
+                      SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          item,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            height: 1.1,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PopularGrid extends StatelessWidget {
+  const _PopularGrid({required this.items});
+
+  final List<dynamic> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = (constraints.maxWidth - 20) / 3;
+        final imageHeight = width / 3 * 4;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 12,
+          children: items.map((item) {
+            final map = _asMap(item);
+            final image = _posterUrl(map);
+            return InkWell(
+              onTap: () => context.push('/play', extra: {'id': map['id']}),
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: width,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: image.isEmpty
+                          ? _ImagePlaceholder(width: width, height: imageHeight)
+                          : LazyImage(
+                              url: image,
+                              width: width,
+                              height: imageHeight,
+                              fit: BoxFit.cover,
+                              cacheWidth:
+                                  (width *
+                                          MediaQuery.of(
+                                            context,
+                                          ).devicePixelRatio)
+                                      .round(),
+                              cacheHeight:
+                                  (imageHeight *
+                                          MediaQuery.of(
+                                            context,
+                                          ).devicePixelRatio)
+                                      .round(),
+                            ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      _text(map['title']),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        height: 1.15,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+}
+
+class _SearchResultItem extends StatelessWidget {
+  const _SearchResultItem({required this.item});
+
+  final dynamic item;
+
+  @override
+  Widget build(BuildContext context) {
+    final map = _asMap(item);
+    final image = _posterUrl(map);
+    final tags = _tagNames(map);
+    return InkWell(
+      onTap: () => context.push('/play', extra: {'id': map['id']}),
+      child: Container(
+        height: 136,
+        padding: EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: image.isEmpty
+                  ? _ImagePlaceholder(width: 90, height: 120)
+                  : LazyImage(
+                      url: image,
+                      width: 90,
+                      height: 120,
+                      fit: BoxFit.cover,
+                      cacheWidth: (90 * MediaQuery.of(context).devicePixelRatio)
+                          .round(),
+                      cacheHeight:
+                          (120 * MediaQuery.of(context).devicePixelRatio)
+                              .round(),
+                    ),
+            ),
+            SizedBox(width: 14),
+            Expanded(
+              child: SizedBox(
+                height: 120,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _text(map['title']),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        height: 1.2,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Expanded(
+                      child: Text(
+                        _text(map['introduction'] ?? map['description']),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Color(0xff999999),
+                          fontSize: 12,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                    if (tags.isNotEmpty)
+                      Text(
+                        tags.join('  '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Color(0xff999999),
+                          fontSize: 12,
+                          height: 1.2,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchEmpty extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: 72),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset(
+              'assets/images/android/ic_logo_loading.png',
+              width: 128,
+              height: 128,
+              errorBuilder: (context, error, stackTrace) {
+                return Icon(
+                  LucideIcons.searchX,
+                  color: Color(0xff555555),
+                  size: 96,
+                );
+              },
+            ),
+            SizedBox(height: 8),
+            Text(
+              t.no_search_found,
+              style: TextStyle(color: Color(0xff999999), fontSize: 14),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ImagePlaceholder extends StatelessWidget {
+  const _ImagePlaceholder({required this.width, required this.height});
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      color: Color(0xff191919),
+      alignment: Alignment.center,
+      child: Icon(LucideIcons.image, color: Colors.white24, size: 24),
+    );
+  }
+}
+
+List<dynamic> _pageItems(Map<String, dynamic>? data) {
+  if (data == null) {
+    return [];
+  }
+  final value =
+      data['data'] ?? data['list'] ?? data['items'] ?? data['records'];
+  if (value is List) {
+    return value;
+  }
+  return [];
+}
+
+int _pageNumber(Map<String, dynamic>? data, int fallback) {
+  final value = data?['currentPage'] ?? data?['current_page'] ?? data?['page'];
+  if (value is int) {
+    return value;
+  }
+  return int.tryParse('$value') ?? fallback;
+}
+
+bool _hasNextPage(Map<String, dynamic>? data, List<dynamic> items) {
+  final direct = data?['hasNext'] ?? data?['has_next'];
+  if (direct is bool) {
+    return direct;
+  }
+  final current = _pageNumber(data, 1);
+  final last = data?['lastPage'] ?? data?['last_page'] ?? data?['totalPage'];
+  final lastPage = last is int ? last : int.tryParse('$last');
+  if (lastPage != null) {
+    return current < lastPage;
+  }
+  return items.length >= 10;
+}
+
+Map<String, dynamic> _asMap(dynamic value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  return {};
+}
+
+String _posterUrl(Map<String, dynamic> item) {
+  final image = _text(
+    item['coverUrl'] ??
+        item['cover_url'] ??
+        item['image'] ??
+        item['image_url'] ??
+        item['cover'],
+  );
+  return image.isEmpty ? '' : Global.static(image);
+}
+
+List<String> _tagNames(Map<String, dynamic> item) {
+  final raw = item['tagList'] ?? item['tag_list'] ?? item['tags'];
+  if (raw is List) {
+    return raw
+        .map((tag) {
+          if (tag is Map) {
+            return _text(tag['name'] ?? tag['title']);
+          }
+          return _text(tag);
+        })
+        .where((name) => name.isNotEmpty)
+        .toList();
+  }
+  return [];
+}
+
+String _text(dynamic value) {
+  return value?.toString().trim() ?? '';
 }

@@ -48,6 +48,7 @@ class _Profile extends State<Profile> {
       setState(() => _loading = true);
     }
 
+    final userFuture = _loadUserInfo();
     final balanceFuture = api<dynamic>(
       'user/balance',
       method: Method.post,
@@ -59,6 +60,7 @@ class _Profile extends State<Profile> {
       loading: false,
     );
 
+    await userFuture;
     final balance = await balanceFuture;
     final vip = await vipFuture;
 
@@ -80,6 +82,47 @@ class _Profile extends State<Profile> {
       _vipExpire = _expireText(expire);
       _loading = false;
     });
+  }
+
+  Future<void> _loadUserInfo() async {
+    final token = Global.sp.getString('token') ?? '';
+    if (token.isEmpty) {
+      return;
+    }
+
+    final deviceUuid = Global.sp.getString('device_uuid') ?? '';
+    final result = await api<Map<String, dynamic>>(
+      'login/token',
+      method: Method.post,
+      data: {
+        'token': token,
+        if (deviceUuid.isNotEmpty) 'device_uuid': deviceUuid,
+      },
+      loading: false,
+    );
+    final info = result.d?['info'];
+    if (!mounted || result.c != 0 || info is! Map) {
+      return;
+    }
+
+    final value = UserStateValue(
+      name: _text(info['name']).isEmpty ? 'No Name' : _text(info['name']),
+      uniqueId: _text(info['unique_id'] ?? info['uid'] ?? info['id']),
+      password: _text(info['password']),
+      vip: _intValue(info['vip']),
+      admin: _intValue(info['admin']),
+      anonymous: _intValue(info['anonymous']),
+    );
+    final current = context.read<UserState>().state;
+    if (current == null ||
+        current.name != value.name ||
+        current.uniqueId != value.uniqueId ||
+        current.password != value.password ||
+        current.vip != value.vip ||
+        current.admin != value.admin ||
+        current.anonymous != value.anonymous) {
+      context.read<UserState>().set(value);
+    }
   }
 
   @override
@@ -117,14 +160,14 @@ class _Profile extends State<Profile> {
                       _isVip
                           ? _VipUnlockedCard(expireText: _vipExpire)
                           : _VipLockedCard(
-                              onSubscribe: () => context.push('/membership'),
+                              onSubscribe: () => _openMembership(context),
                             ),
                       SizedBox(height: _isVip ? 16 : 16),
                       _AccountCard(
                         coins: _coins,
                         loading: _loading,
                         onDetails: () => context.push('/earn/detail'),
-                        onTopUp: () => context.push('/membership'),
+                        onTopUp: () => _openMembership(context),
                       ),
                       SizedBox(height: 12),
                       _MineMenuItem(
@@ -267,51 +310,51 @@ class _VipLockedCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xffffecd4), Color(0xfff3cb93)],
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onSubscribe,
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xffffecd4), Color(0xfff3cb93)],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+          ),
+          borderRadius: BorderRadius.circular(12),
         ),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          Text(
-            t.upgrade_vip_unlock_all_benefits,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Color(0xff633e25),
-              fontSize: 16,
-              height: 1.2,
-              fontWeight: FontWeight.w800,
+        child: Column(
+          children: [
+            Text(
+              t.upgrade_vip_unlock_all_benefits,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color(0xff633e25),
+                fontSize: 16,
+                height: 1.2,
+                fontWeight: FontWeight.w800,
+              ),
             ),
-          ),
-          SizedBox(height: 14),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _VipBenefit(
-                image: 'assets/images/android/ic_vip_short.png',
-                label: t.unlimited_viewing,
-              ),
-              _VipBenefit(
-                image: 'assets/images/android/ic_vip_hd.png',
-                label: t.hd_quality,
-              ),
-              _VipBenefit(
-                image: 'assets/images/android/ic_vip_benefit.png',
-                label: t.more_benefits,
-              ),
-            ],
-          ),
-          SizedBox(height: 14),
-          InkWell(
-            onTap: onSubscribe,
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
+            SizedBox(height: 14),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _VipBenefit(
+                  image: 'assets/images/android/ic_vip_short.png',
+                  label: t.unlimited_viewing,
+                ),
+                _VipBenefit(
+                  image: 'assets/images/android/ic_vip_hd.png',
+                  label: t.hd_quality,
+                ),
+                _VipBenefit(
+                  image: 'assets/images/android/ic_vip_benefit.png',
+                  label: t.more_benefits,
+                ),
+              ],
+            ),
+            SizedBox(height: 14),
+            Container(
               height: 40,
               alignment: Alignment.center,
               decoration: BoxDecoration(
@@ -332,8 +375,8 @@ class _VipLockedCard extends StatelessWidget {
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -663,6 +706,24 @@ String _cleanNumber(dynamic value) {
     return number.toInt().toString();
   }
   return number.toStringAsFixed(2).replaceFirst(RegExp(r'\.?0+$'), '');
+}
+
+void _openMembership(BuildContext context) {
+  context.push('/membership');
+}
+
+int _intValue(dynamic value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is bool) {
+    return value ? 1 : 0;
+  }
+  return int.tryParse('${value ?? 0}') ?? 0;
+}
+
+String _text(dynamic value) {
+  return value?.toString().trim() ?? '';
 }
 
 String _expireText(int seconds) {

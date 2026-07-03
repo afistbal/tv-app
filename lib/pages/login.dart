@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/svg.dart';
@@ -9,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/components/modal_bottom.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
@@ -38,6 +40,10 @@ class _Login extends State<Login> {
   }
 
   _onGoogleSign() async {
+    if (Global.webPreview) {
+      Global.info('Please test login in the iOS app.');
+      return;
+    }
     final cancel = Global.loading();
     try {
       // Trigger the authentication flow
@@ -78,6 +84,10 @@ class _Login extends State<Login> {
   }
 
   _onAppleSign() async {
+    if (Global.webPreview) {
+      Global.info('Please test Apple Sign in on iOS.');
+      return;
+    }
     final cancel = Global.loading();
     try {
       final provider = AppleAuthProvider();
@@ -97,6 +107,10 @@ class _Login extends State<Login> {
   }
 
   _emailLogin() async {
+    if (Global.webPreview) {
+      Global.info('Please test login in the iOS app.');
+      return;
+    }
     final result = await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -245,10 +259,13 @@ class _Login extends State<Login> {
                 SizedBox(
                   height: 192,
                   child: Center(
-                    child: Text(t.site_name, style: TextStyle(fontSize: 32)),
+                    child: Text(
+                      AppConfig.current.brandDisplayName,
+                      style: TextStyle(fontSize: 32),
+                    ),
                   ),
                 ),
-                if (Platform.isIOS)
+                if (Global.webPreview || (!kIsWeb && Platform.isIOS))
                   Button(
                     onTap: _onAppleSign,
                     width: 280,

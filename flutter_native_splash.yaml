@@ -3,7 +3,7 @@
 flutter_native_splash:
   android: true
   ios: true
-  web: false
+  web: true
   color: "#000000"
   image: assets/images/splash.png
   image_ios: assets/images/splash.png

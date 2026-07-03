@@ -6,11 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:firebase_core/firebase_core.dart' show Firebase;
 import 'package:go_router/go_router.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:internet_connection_checker_plus/internet_connection_checker_plus.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/pages/alert.dart';
@@ -20,7 +20,6 @@ import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/pages/about.dart';
 import 'package:yogotv/pages/admin.dart';
 import 'package:yogotv/pages/airwallex.dart';
-import 'package:yogotv/pages/earn.dart';
 import 'package:yogotv/pages/earn_detail.dart';
 import 'package:yogotv/pages/earn_withdraw.dart';
 import 'package:yogotv/pages/home.dart';
@@ -45,7 +44,6 @@ Future main() async {
     SystemUiMode.manual,
     overlays: [SystemUiOverlay.top],
   );
-  LocaleSettings.useDeviceLocale();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
   while (!await InternetConnection().hasInternetAccess) {
@@ -53,7 +51,17 @@ Future main() async {
   }
 
   await Global.init();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  final savedLocale = Global.sp.getString('locale');
+  if (savedLocale == null) {
+    await LocaleSettings.setLocale(AppLocale.en);
+  } else {
+    await LocaleSettings.setLocaleRaw(savedLocale);
+  }
+  if (!Global.webPreview) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
 
   runApp(TranslationProvider(child: App()));
 }
@@ -93,7 +101,7 @@ final _router = GoRouter(
     GoRoute(
       path: '/login',
       builder: (context, state) {
-        return Login();
+        return _previewRoute(Login());
       },
     ),
     GoRoute(
@@ -117,7 +125,7 @@ final _router = GoRouter(
     GoRoute(
       path: '/membership',
       builder: (context, state) {
-        return Membership();
+        return _previewRoute(Membership());
       },
     ),
     GoRoute(
@@ -155,6 +163,10 @@ final _router = GoRouter(
   ],
   observers: [BotToastNavigatorObserver()],
 );
+
+Widget _previewRoute(Widget child) {
+  return _WebPreviewFrame(fillHeight: true, child: child);
+}
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -318,6 +330,12 @@ class _Main extends State<Main> {
     }
     Global.elapsed('App initialized');
     FlutterNativeSplash.remove();
+    if (Global.webPreview) {
+      setState(() {
+        _loading = false;
+      });
+      return;
+    }
     MobileAds.instance.initialize().then((status) async {
       Global.elapsed('Mobile Ads initialized');
       await MobileAds.instance.updateRequestConfiguration(
@@ -422,63 +440,149 @@ class _Main extends State<Main> {
           : BlocBuilder<MainState, MainStateValue>(
               builder: (context, state) {
                 return Scaffold(
-                  body: IndexedStack(
-                    index: state.current,
-                    children: [
-                      Home(),
-                      MyList(load: state.current == 1),
-                      Earn(load: state.current == 2),
-                      Profile(),
-                    ],
+                  body: _WebPreviewFrame(
+                    fillHeight: true,
+                    child: IndexedStack(
+                      index: state.current,
+                      children: [
+                        Home(),
+                        Recommend(),
+                        MyList(load: state.current == 2),
+                        Profile(),
+                      ],
+                    ),
                   ),
-                  bottomNavigationBar: BottomNavigationBar(
-                    type: BottomNavigationBarType.fixed,
-                    currentIndex: state.current,
-                    onTap: _handleChangeIndex,
-                    items: [
-                      BottomNavigationBarItem(
-                        icon: Icon(LucideIcons.house, color: Colors.white70),
-                        activeIcon: Icon(
-                          LucideIcons.house,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        label: t.home,
-                      ),
-                      BottomNavigationBarItem(
-                        icon: Icon(
-                          LucideIcons.listVideo,
-                          color: Colors.white70,
-                        ),
-                        activeIcon: Icon(
-                          LucideIcons.listVideo,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        label: t.my_list,
-                      ),
-                      BottomNavigationBarItem(
-                        icon: Icon(
-                          LucideIcons.circleDollarSign,
-                          color: Colors.white70,
-                        ),
-                        activeIcon: Icon(
-                          LucideIcons.circleDollarSign,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        label: t.earn.earn,
-                      ),
-                      BottomNavigationBarItem(
-                        icon: Icon(LucideIcons.user, color: Colors.white70),
-                        activeIcon: Icon(
-                          LucideIcons.user,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        label: t.profile,
-                      ),
-                    ],
+                  bottomNavigationBar: _WebPreviewFrame(
+                    child: _MainBottomNavigation(
+                      currentIndex: state.current,
+                      onTap: _handleChangeIndex,
+                    ),
                   ),
                 );
               },
             ),
+    );
+  }
+}
+
+class _MainBottomNavigation extends StatelessWidget {
+  const _MainBottomNavigation({
+    required this.currentIndex,
+    required this.onTap,
+  });
+
+  final int currentIndex;
+  final ValueChanged<int> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      _BottomTabData(icon: 1, label: t.home),
+      _BottomTabData(icon: 2, label: t.for_you),
+      _BottomTabData(icon: 3, label: t.my_list),
+      _BottomTabData(icon: 4, label: t.profile),
+    ];
+
+    return ColoredBox(
+      color: Colors.black,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 48,
+          child: Row(
+            children: List.generate(items.length, (index) {
+              final item = items[index];
+              final selected = index == currentIndex;
+              return Expanded(
+                child: InkWell(
+                  onTap: () => onTap(index),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _BottomTabIcon(id: item.icon, active: selected),
+                      SizedBox(height: 2),
+                      Text(
+                        item.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected
+                              ? Color(0xffff3d5d)
+                              : Color(0xff999999),
+                          fontSize: 10,
+                          height: 1,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomTabData {
+  const _BottomTabData({required this.icon, required this.label});
+
+  final int icon;
+  final String label;
+}
+
+class _BottomTabIcon extends StatelessWidget {
+  const _BottomTabIcon({required this.id, this.active = false});
+
+  final int id;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    return SvgPicture.asset(
+      'assets/images/android/main_tab_$id${active ? 1 : 0}.svg',
+      width: 24,
+      height: 24,
+      fit: BoxFit.contain,
+    );
+  }
+}
+
+class _WebPreviewFrame extends StatelessWidget {
+  const _WebPreviewFrame({required this.child, this.fillHeight = false});
+
+  final Widget child;
+  final bool fillHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Global.webPreview) {
+      return child;
+    }
+
+    final size = MediaQuery.sizeOf(context);
+    final width = size.width > 480 ? 480.0 : size.width;
+    final framed = SizedBox(width: width, child: child);
+
+    if (!fillHeight) {
+      return ColoredBox(
+        color: Colors.black,
+        child: Align(
+          alignment: Alignment.center,
+          widthFactor: 1,
+          heightFactor: 1,
+          child: framed,
+        ),
+      );
+    }
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: SizedBox(width: width, height: size.height, child: child),
+      ),
     );
   }
 }

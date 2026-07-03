@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:in_app_review/in_app_review.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 
@@ -38,7 +39,10 @@ class _About extends State<About> {
                       height: 64,
                     ),
                   ),
-                  Text(t.site_name, style: TextStyle(fontSize: 20)),
+                  Text(
+                    AppConfig.current.brandDisplayName,
+                    style: TextStyle(fontSize: 20),
+                  ),
                 ],
               ),
             ),

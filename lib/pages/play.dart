@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:animated_flip_counter/animated_flip_counter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -29,6 +28,14 @@ class Play extends StatefulWidget {
   State<StatefulWidget> createState() {
     return _Play();
   }
+}
+
+String _watchToEpisodeId(dynamic watchTo) {
+  if (watchTo is! Map) {
+    return '';
+  }
+  return '${watchTo['episode_id'] ?? watchTo['ep_id'] ?? watchTo['epId'] ?? ''}'
+      .trim();
 }
 
 class _Play extends State<Play> {
@@ -63,9 +70,10 @@ class _Play extends State<Play> {
     setState(() {
       _data = result.d;
       _loading = false;
-      if (widget.watchTo != null && widget.watchTo['episode_id'] != null) {
+      final watchEpisodeId = _watchToEpisodeId(widget.watchTo);
+      if (watchEpisodeId != '') {
         for (var i = 0; i < _data['episodes'].length; i++) {
-          if (_data['episodes'][i]['id'] == widget.watchTo['episode_id']) {
+          if (_data['episodes'][i]['id'].toString() == watchEpisodeId) {
             _controller = PageController(initialPage: i);
             _index = i;
             break;
@@ -257,9 +265,11 @@ class _VideoState extends State<_Video> {
   }
 
   int _historyPosition() {
+    final watchEpisodeId = _watchToEpisodeId(widget.watchTo);
     if (widget.watchTo != null &&
-        widget.watchTo['episode_id'].toString() == _data['id'].toString()) {
-      return widget.watchTo['position'];
+        watchEpisodeId != '' &&
+        watchEpisodeId == _data['id'].toString()) {
+      return int.tryParse('${widget.watchTo['position'] ?? 0}') ?? 0;
     }
     return 0;
   }
@@ -654,7 +664,10 @@ class _VideoState extends State<_Video> {
                 ),
                 Text(
                   '${(_position / 60).floor().toString().padLeft(2, '0')}:${(_position % 60).toString().padLeft(2, '0')}/${_controller!.value.duration.inMinutes.toString().padLeft(2, '0')}:${(_controller!.value.duration.inSeconds % 60).toString().padLeft(2, '0')}',
-                  style: GoogleFonts.robotoMono(fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),

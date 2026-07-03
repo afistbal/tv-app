@@ -13,9 +13,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/states/user.dart';
 
 class Global {
+  static const bool webPreview =
+      kIsWeb && bool.fromEnvironment('YOGO_WEB_PREVIEW');
   static final GlobalKey appKey = GlobalKey();
   static final Logger logger = Logger(level: Level.debug);
   static final int time = DateTime.now().millisecondsSinceEpoch;
@@ -31,25 +34,27 @@ class Global {
   static init() async {
     sp = await SharedPreferences.getInstance();
 
-    if (await AppTrackingTransparency.trackingAuthorizationStatus ==
-        TrackingStatus.notDetermined) {
-      final authorization =
-          await AppTrackingTransparency.requestTrackingAuthorization();
-      logger.d(authorization);
+    if (webPreview) {
+      tracking = false;
+    } else {
+      if (await AppTrackingTransparency.trackingAuthorizationStatus ==
+          TrackingStatus.notDetermined) {
+        final authorization =
+            await AppTrackingTransparency.requestTrackingAuthorization();
+        logger.d(authorization);
+      }
+      final status = await Permission.appTrackingTransparency.request();
+      logger.d(status);
+      tracking = status.isGranted;
+      logger.d('Tracking is $tracking');
+      logger.d(
+        'IDFA is ${await AppTrackingTransparency.getAdvertisingIdentifier()}',
+      );
     }
-    final status = await Permission.appTrackingTransparency.request();
-    logger.d(status);
-    tracking = status.isGranted;
-    logger.d('Tracking is $tracking');
-    logger.d(
-      'IDFA is ${await AppTrackingTransparency.getAdvertisingIdentifier()}',
-    );
 
     dio = Dio(
       BaseOptions(
-        baseUrl: kDebugMode
-            ? 'http://192.168.1.30:5173/api/'
-            : 'https://app.yogotv.com/api/',
+        baseUrl: AppConfig.apiBaseUrl,
         responseType: ResponseType.json,
       ),
     );
@@ -67,6 +72,10 @@ class Global {
 
     packageInfo = await PackageInfo.fromPlatform();
 
+    if (webPreview) {
+      await _ensureWebPreviewSession();
+    }
+
     while (true) {
       try {
         if ((await dio.get('ping')).data == 'ok') {
@@ -80,6 +89,40 @@ class Global {
 
     final result = await api<Map<String, dynamic>>('config', loading: false);
     config = result.d;
+  }
+
+  static Future<void> _ensureWebPreviewSession() async {
+    var deviceUuid = sp.getString('device_uuid') ?? '';
+    if (deviceUuid.isEmpty) {
+      deviceUuid =
+          'flutter-web-${DateTime.now().millisecondsSinceEpoch}-${Object().hashCode}';
+      await sp.setString('device_uuid', deviceUuid);
+    }
+
+    final token = sp.getString('token') ?? '';
+    if (token.isNotEmpty) {
+      final result = await api<Map<String, dynamic>>(
+        'login/token',
+        method: Method.post,
+        data: {'token': token, 'device_uuid': deviceUuid},
+        loading: false,
+      );
+      if (result.c == 0) {
+        return;
+      }
+      await sp.remove('token');
+    }
+
+    final result = await api<Map<String, dynamic>>(
+      'login/anonymous',
+      method: Method.post,
+      data: {'device_uuid': deviceUuid},
+      loading: false,
+    );
+    final tokenValue = result.d?['token']?.toString() ?? '';
+    if (result.c == 0 && tokenValue.isNotEmpty) {
+      await sp.setString('token', tokenValue);
+    }
   }
 
   static void blockAd() {
@@ -112,7 +155,18 @@ class Global {
   }
 
   static String static(String name) {
-    return 'https:${config!['static']}/$name';
+    final path = name.trim();
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+    if (path.startsWith('//')) {
+      return 'https:$path';
+    }
+    final staticBase = '${config!['static']}'.replaceFirst(RegExp(r'/+$'), '');
+    final normalizedBase = staticBase.startsWith('//')
+        ? 'https:$staticBase'
+        : staticBase;
+    return '$normalizedBase/${path.replaceFirst(RegExp(r'^/+'), '')}';
   }
 
   static void Function() loading() {

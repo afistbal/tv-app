@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 
@@ -23,13 +24,19 @@ Future<Result<T>> api<T>(
   Object? data,
 }) async {
   Response response;
+  final os = Global.webPreview ? 'android' : Platform.operatingSystem;
+  final source = Global.webPreview
+      ? 'A100APPANDROID'
+      : 'A100APP${Platform.isIOS ? 'IOS' : 'ANDROID'}';
+  final platform = Global.webPreview ? 'Android' : 'app';
   Map<String, String> headers = {
     'Accept-Language': LocaleSettings.currentLocale.languageCode,
     'Accept': 'application/json',
-    'X-Platform': 'app',
-    'X-OS': Platform.operatingSystem,
+    'X-Platform': platform,
+    'X-OS': os,
     'X-Test': Global.sp.getString('test') ?? '123456789',
-    'X-Source': 'A100APP${Platform.isIOS ? 'IOS' : 'ANDROID'}',
+    'X-Source': source,
+    'X-App-Flag': AppConfig.current.flag,
     'X-Version':
         '${Global.packageInfo.version}.${Global.packageInfo.buildNumber}',
   };
@@ -77,8 +84,10 @@ Future<Result<T>> api<T>(
         result.m = 'Server error.';
         break;
       case 401:
-        await Global.sp.remove('token');
-        await FirebaseAuth.instance.signOut();
+        if (!Global.webPreview) {
+          await Global.sp.remove('token');
+          await FirebaseAuth.instance.signOut();
+        }
         result.m = 'Authentication Failure.';
         break;
       case 403:

@@ -20,22 +20,18 @@ class _Splash extends State<Splash> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       body: Column(
         spacing: 8,
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(40),
-            child: Image.asset('assets/images/icon.png', width: 80, height: 80),
+          Image.asset(
+            'assets/images/android/ic_logo_login.png',
+            width: 256,
+            fit: BoxFit.contain,
           ),
-          Center(
-            child: Text(
-              'YogoTV',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-          ),
-          SizedBox(height: 160),
+          SizedBox(height: 120),
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 64),
             child: Column(

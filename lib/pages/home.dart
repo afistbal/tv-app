@@ -1,119 +1,24 @@
-import 'dart:convert';
-import 'dart:ui';
-
-import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/components/empty.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
-import 'package:yogotv/components/no_more.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
-import 'package:yogotv/widgets/film_item.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
 
   @override
-  State<StatefulWidget> createState() {
-    return _Home();
-  }
+  State<Home> createState() => _Home();
 }
 
-class _Home extends State<Home> with TickerProviderStateMixin {
-  late final TabController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TabController(length: 3, vsync: this);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(toolbarHeight: 0),
-      body: Column(
-        children: [
-          Ink(
-            color: Color(0xff111111),
-            child: TabBar(
-              controller: _controller,
-              dividerHeight: 0,
-              indicatorSize: TabBarIndicatorSize.tab,
-              indicatorWeight: 1,
-              indicatorPadding: EdgeInsets.symmetric(
-                horizontal: 32,
-                vertical: 10,
-              ),
-              tabAlignment: TabAlignment.fill,
-              unselectedLabelColor: Colors.white54,
-              labelPadding: EdgeInsets.symmetric(horizontal: 4),
-              tabs: [
-                Ink(
-                  height: 54,
-                  child: Center(
-                    child: Text(
-                      t.home_tab_recommend,
-                      style: TextStyle(fontSize: 16, height: 1),
-                    ),
-                  ),
-                ),
-                Ink(
-                  height: 54,
-                  child: Center(
-                    child: Text(
-                      t.home_tab_rankings,
-                      style: TextStyle(fontSize: 16, height: 1),
-                    ),
-                  ),
-                ),
-                Ink(
-                  height: 54,
-                  child: Center(
-                    child: Text(
-                      t.categories,
-                      style: TextStyle(fontSize: 16, height: 1),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _controller,
-              children: [First(), Ranking(), Category()],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class First extends StatefulWidget {
-  const First({super.key});
-
-  @override
-  State<StatefulWidget> createState() {
-    return _First();
-  }
-}
-
-class _First extends State<First> with AutomaticKeepAliveClientMixin {
-  final _controller = ScrollController();
-  dynamic _watchTo;
-  dynamic _data;
-  bool _loading = true;
-  int _currentTop = 0;
-  bool _latestLoading = true;
-  List<dynamic> _latest = [];
-  bool _more = true;
-  int _page = 0;
+class _Home extends State<Home>
+    with AutomaticKeepAliveClientMixin, SingleTickerProviderStateMixin {
+  late final TabController _tabController;
 
   @override
   bool get wantKeepAlive => true;
@@ -121,995 +26,917 @@ class _First extends State<First> with AutomaticKeepAliveClientMixin {
   @override
   void initState() {
     super.initState();
-
-    _controller.addListener(() {
-      if (_controller.offset == _controller.position.maxScrollExtent &&
-          _controller.position.maxScrollExtent != 0) {
-        Global.logger.d(_controller.position.maxScrollExtent);
-        _loadLatest(page: _page + 1);
-      }
+    _tabController = TabController(length: 3, vsync: this);
+    Future.delayed(Duration(milliseconds: 500), () {
+      _prefetchMovieGridTab('new');
     });
-
-    final watchTo = Global.sp.getString('watch_to');
-
-    if (watchTo != null) {
-      _watchTo = jsonDecode(watchTo);
-    }
-
-    _loadData();
   }
 
-  _loadData() async {
-    final res = await api('home');
-    if (res.c != 0) {
-      return;
-    }
-    setState(() {
-      _data = res.d;
-      _loading = false;
-    });
-    _loadLatest();
-  }
-
-  _loadLatest({page = 1}) {
-    if (!_more || page <= _page) {
-      return;
-    }
-    api('movie', query: {'page': page}).then((res) {
-      if (res.c != 0) {
-        return;
-      }
-
-      setState(() {
-        _latest = [..._latest, ...res.d['data']];
-        _latestLoading = false;
-        _more = res.d['data'].length == 24;
-        _page = page;
-      });
-    });
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final width = (MediaQuery.of(context).size.width - 48) / 2;
-    final height = width / 3 * 4;
 
-    return RefreshIndicator(
-      edgeOffset: 0,
-      onRefresh: () async {
-        _data = null;
-        _latest = [];
-        _latestLoading = true;
-        _more = true;
-        _page = 0;
-        _currentTop = 0;
-        await _loadData();
-      },
-      child: Stack(
-        children: [
-          CustomScrollView(
-            controller: _controller,
-            slivers: [
-              // SliverAppBar(
-              // title: Text(t.site_name),
-              // pinned: true,
-              // primary: false,
-              // floating: true,
-              // backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-              // surfaceTintColor: Colors.transparent,
-              // actions: [
-              //   IconButton(
-              //     onPressed: () {
-              //       context.push('/search');
-              //     },
-              //     icon: Icon(LucideIcons.search),
-              //   ),
-              // ],
-              // ),
-              ...(_loading
-                  ? [SliverFillRemaining(child: Loading())]
-                  : _data['top'].length == 0
-                  ? [SliverFillRemaining(child: Empty())]
-                  : [
-                      SliverToBoxAdapter(
-                        child: Stack(
-                          children: [
-                            SizedBox(
-                              height: 372,
-                              width: MediaQuery.of(context).size.width,
-                              child: ImageFiltered(
-                                imageFilter: ImageFilter.blur(
-                                  sigmaX: 24,
-                                  sigmaY: 24,
-                                ),
-                                child: LazyImage(
-                                  url: Global.static(
-                                    _data['top'][_currentTop]['image'],
-                                  ),
-                                  width: MediaQuery.of(context).size.width,
-                                  height: MediaQuery.of(context).size.width,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                            ),
-                            Positioned(
-                              top: 24,
-                              height: 320,
-                              width: MediaQuery.of(context).size.width,
-                              child: CarouselSlider(
-                                options: CarouselOptions(
-                                  height: 320,
-                                  viewportFraction: 0.6,
-                                  aspectRatio: 0.75,
-                                  enlargeFactor: 0.4,
-                                  enlargeCenterPage: true,
-                                  enlargeStrategy:
-                                      CenterPageEnlargeStrategy.zoom,
-                                  onPageChanged: (index, reason) {
-                                    setState(() {
-                                      _currentTop = index;
-                                    });
-                                  },
-                                ),
-                                items: _data['top'].map<Widget>((e) {
-                                  return Builder(
-                                    builder: (BuildContext context) {
-                                      return GestureDetector(
-                                        onTap: () {
-                                          context.push(
-                                            '/play',
-                                            extra: {'id': e['id']},
-                                          );
-                                        },
-                                        child: Container(
-                                          width: 240,
-                                          margin: EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                          ),
-                                          child: ClipRRect(
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                            child: LazyImage(
-                                              url: Global.static(e['image']),
-                                              width: 240,
-                                              height: 320,
-                                              fit: BoxFit.cover,
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  );
-                                }).toList(),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.only(left: 16, right: 16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            spacing: 16,
-                            children: [
-                              Text(
-                                t.home_page.recommend,
-                                style: TextStyle(fontSize: 18),
-                              ),
-                              SizedBox(
-                                height: 170,
-                                child: ListView.builder(
-                                  scrollDirection: Axis.horizontal,
-                                  itemCount: _data['recommend'].length * 2,
-                                  itemBuilder: (context, index) {
-                                    if (index % 2 != 0) {
-                                      return SizedBox(width: 8);
-                                    }
-                                    int i = (index / 2).floor();
-                                    return GestureDetector(
-                                      onTap: () {
-                                        context.push(
-                                          '/play',
-                                          extra: {
-                                            'id': _data['recommend'][i]['id'],
-                                          },
-                                        );
-                                      },
-                                      child: SizedBox(
-                                        width: 108,
-                                        height: 170,
-                                        child: Column(
-                                          spacing: 6,
-                                          children: [
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              child: LazyImage(
-                                                url: Global.static(
-                                                  _data['recommend'][i]['image'],
-                                                ),
-                                                height: 144,
-                                                width: 108,
-                                                fit: BoxFit.cover,
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              height: 20,
-                                              child: Text(
-                                                _data['recommend'][i]['title'],
-                                                style: TextStyle(
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            top: 32,
-                            left: 16,
-                            right: 16,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            spacing: 16,
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    t.home_page.rank,
-                                    style: TextStyle(fontSize: 18),
-                                  ),
-                                  // GestureDetector(
-                                  //   onTap: () {},
-                                  //   child: SizedBox(
-                                  //     height: 32,
-                                  //     child: Row(
-                                  //       children: [
-                                  //         Text(
-                                  //           Translations.of(
-                                  //             context,
-                                  //           ).home_page.rank_more,
-                                  //         ),
-                                  //         Center(
-                                  //           child: Icon(Icons.arrow_forward_ios, size: 18),
-                                  //         ),
-                                  //       ],
-                                  //     ),
-                                  //   ),
-                                  // ),
-                                ],
-                              ),
-                              SizedBox(
-                                height: 170,
-                                child: ListView.builder(
-                                  scrollDirection: Axis.horizontal,
-                                  itemCount: _data['rank'].length * 2,
-                                  itemBuilder: (context, index) {
-                                    if (index % 2 != 0) {
-                                      return SizedBox(width: 8);
-                                    }
-                                    int i = (index / 2).floor();
-                                    return GestureDetector(
-                                      onTap: () {
-                                        context.push(
-                                          '/play',
-                                          extra: {'id': _data['rank'][i]['id']},
-                                        );
-                                      },
-                                      child: SizedBox(
-                                        width: 108,
-                                        height: 170,
-                                        child: Column(
-                                          spacing: 6,
-                                          children: [
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              child: LazyImage(
-                                                url: Global.static(
-                                                  _data['rank'][i]['image'],
-                                                ),
-                                                height: 144,
-                                                width: 108,
-                                                fit: BoxFit.cover,
-                                              ),
-                                            ),
-                                            SizedBox(
-                                              height: 20,
-                                              child: Text(
-                                                _data['rank'][i]['title'],
-                                                style: TextStyle(
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            top: 32,
-                            left: 16,
-                            right: 16,
-                            bottom: 24,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            spacing: 16,
-                            children: [
-                              Text(
-                                t.home_page.latest,
-                                style: TextStyle(fontSize: 18, height: 1),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      _latestLoading
-                          ? SliverToBoxAdapter()
-                          : SliverPadding(
-                              padding: EdgeInsets.only(
-                                left: 16,
-                                right: 16,
-                                bottom: 16,
-                              ),
-                              sliver: SliverGrid.builder(
-                                itemCount: _latest.length,
-                                gridDelegate:
-                                    SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: 2,
-                                      crossAxisSpacing: 16,
-                                      mainAxisSpacing: 16,
-                                      mainAxisExtent: height + 52,
-                                    ),
-                                itemBuilder: (context, index) {
-                                  return FilmItem(
-                                    id: _latest[index]['id'],
-                                    width: width,
-                                    height: height,
-                                    image: _latest[index]['image'],
-                                    title: _latest[index]['title'],
-                                    recommend: true,
-                                  );
-                                },
-                              ),
-                            ),
-                      _more
-                          ? SliverToBoxAdapter(
-                              child: Padding(
-                                padding: EdgeInsets.only(top: 16, bottom: 32),
-                                child: Loading(),
-                              ),
-                            )
-                          : SliverToBoxAdapter(
-                              child: Padding(
-                                padding: EdgeInsets.only(top: 16, bottom: 32),
-                                child: NoMore(),
-                              ),
-                            ),
-                    ]),
-            ],
-          ),
-          if (!_loading && _watchTo != null)
-            Positioned(
-              bottom: MediaQuery.of(context).padding.bottom,
-              left: 0,
-              right: 0,
-              child: Stack(
-                children: [
-                  Padding(
-                    padding: EdgeInsets.only(
-                      left: 32,
-                      right: 32,
-                      top: 32,
-                      bottom: 16,
-                    ),
-                    child: Material(
-                      type: MaterialType.transparency,
-                      child: Ink(
-                        height: 96,
-                        padding: EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Color(0xff303030),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          spacing: 16,
-                          children: [
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LazyImage(
-                                url: Global.static(_watchTo['image']),
-                                width: 48,
-                                height: 64,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    '${_watchTo['title']}',
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 2,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      height: 1.25,
-                                    ),
-                                  ),
-                                  Text(
-                                    t.watch_to(
-                                      episode: _watchTo['episode'],
-                                      time:
-                                          '${(_watchTo['position'] / 60).floor().toString().padLeft(2, '0')}:${(_watchTo['position'] % 60).floor().toString().padLeft(2, '0')}',
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 1,
-                                    style: TextStyle(
-                                      height: 1.25,
-                                      fontSize: 12,
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton.filled(
-                              onPressed: () {
-                                context.push(
-                                  '/play',
-                                  extra: {
-                                    'id': _watchTo['id'],
-                                    'watchTo': _watchTo,
-                                  },
-                                );
-                                _watchTo = null;
-                              },
-                              icon: Icon(LucideIcons.play, size: 20),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 0,
-                    left: 0,
-                    top: 8,
-                    child: Center(
-                      child: Material(
-                        type: MaterialType.transparency,
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _watchTo = null;
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(24),
-                          child: Ink(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: Color(0xff303030),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Icon(LucideIcons.chevronsDown),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _HomeToolbar(),
+            SizedBox(height: 8),
+            SizedBox(
+              height: 40,
+              child: TabBar(
+                controller: _tabController,
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                dividerColor: Colors.transparent,
+                indicatorSize: TabBarIndicatorSize.label,
+                indicatorColor: Colors.white,
+                indicatorWeight: 2,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white.withAlpha(204),
+                labelStyle: TextStyle(
+                  fontSize: 16,
+                  height: 1,
+                  fontWeight: FontWeight.w800,
+                ),
+                unselectedLabelStyle: TextStyle(
+                  fontSize: 16,
+                  height: 1,
+                  fontWeight: FontWeight.w500,
+                ),
+                labelPadding: EdgeInsets.symmetric(horizontal: 15),
+                tabs: [
+                  Tab(text: t.popular),
+                  Tab(text: t.new_string),
+                  Tab(text: t.categories),
                 ],
               ),
             ),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _MovieGrid(
+                    key: PageStorageKey('home-popular'),
+                    tab: 'popular',
+                    columns: 2,
+                  ),
+                  _MovieGrid(
+                    key: PageStorageKey('home-new'),
+                    tab: 'new',
+                    columns: 2,
+                  ),
+                  _CategoryMovieGrid(key: PageStorageKey('home-category')),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeToolbar extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(15, 4, 15, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => context.push('/search'),
+              child: Container(
+                height: 36,
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: Color(0xff151515),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      LucideIcons.search,
+                      size: 16,
+                      color: Color(0xff999999),
+                    ),
+                    SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        t.search_placeholder,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Color(0xff999999),
+                          fontSize: 14,
+                          height: 1,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SizedBox(width: 10),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => context.push('/membership'),
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Image.asset(
+                'assets/images/android/ic_home_vip.png',
+                height: 28,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class Ranking extends StatefulWidget {
-  const Ranking({super.key});
+class _MovieGrid extends StatefulWidget {
+  const _MovieGrid({super.key, required this.tab, required this.columns});
+
+  final String tab;
+  final int columns;
+
   @override
-  State<StatefulWidget> createState() {
-    return _Ranking();
-  }
+  State<_MovieGrid> createState() => _MovieGridState();
 }
 
-class _Ranking extends State<Ranking> with AutomaticKeepAliveClientMixin {
-  bool _loading = true;
-  List<dynamic> _list = [];
+class _MovieGridState extends State<_MovieGrid>
+    with AutomaticKeepAliveClientMixin {
+  late final ScrollController _scrollController;
+  final List<dynamic> _items = [];
 
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
+  int _page = 0;
+  bool _loading = true;
+  bool _requesting = false;
+  bool _more = true;
 
   @override
   bool get wantKeepAlive => true;
 
-  _loadData() async {
-    final result = await api('home/rank');
-    if (result.c != 0) {
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController(
+      initialScrollOffset: _scrollOffsets[widget.tab] ?? 0,
+    );
+    _scrollController.addListener(_onScroll);
+    final cache = _discoverCache[widget.tab];
+    if (cache != null) {
+      _items.addAll(cache.items);
+      _page = cache.page;
+      _more = cache.more;
+      _loading = false;
+    } else {
+      _load(page: 1);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_scrollController.hasClients) {
+      _scrollOffsets[widget.tab] = _scrollController.offset;
+    }
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients || !_more || _requesting) {
       return;
     }
+    _scrollOffsets[widget.tab] = _scrollController.offset;
+    final position = _scrollController.position;
+    if (position.maxScrollExtent - position.pixels < 480) {
+      _load(page: _page + 1);
+    }
+  }
+
+  Future<void> _refresh() async {
+    await _load(page: 1, refresh: true);
+  }
+
+  Future<void> _load({required int page, bool refresh = false}) async {
+    if (_requesting || (!refresh && page <= _page) || (!refresh && !_more)) {
+      return;
+    }
+
+    if (!refresh && page == 1) {
+      final prefetch = _discoverPrefetches[widget.tab];
+      if (prefetch != null) {
+        setState(() {
+          _requesting = true;
+        });
+        await prefetch;
+        if (!mounted) {
+          return;
+        }
+        final cache = _discoverCache[widget.tab];
+        if (cache != null) {
+          setState(() {
+            _items
+              ..clear()
+              ..addAll(cache.items);
+            _page = cache.page;
+            _more = cache.more;
+            _loading = false;
+            _requesting = false;
+          });
+          return;
+        }
+      }
+    }
+
     setState(() {
-      _list = result.d;
+      _requesting = true;
+      if (refresh) {
+        _loading = true;
+        _more = true;
+      }
+    });
+
+    final result = await api<Map<String, dynamic>>(
+      'movie/discover',
+      method: Method.post,
+      data: {'page': page, 'pageSize': 20, 'tab': widget.tab},
+      loading: false,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    final payload = result.d;
+    final rows = payload == null ? <dynamic>[] : _rowsFromPayload(payload);
+    final nextPage = payload == null ? page : _currentPage(payload, page);
+    final more = payload != null && _hasMore(payload, nextPage, rows.length);
+
+    if (page == 1 && payload != null) {
+      _discoverCache[widget.tab] = _DiscoverCache(
+        items: List<dynamic>.of(rows),
+        page: nextPage,
+        more: more,
+      );
+    }
+
+    setState(() {
+      if (refresh || page == 1) {
+        _items
+          ..clear()
+          ..addAll(rows);
+      } else {
+        _items.addAll(rows);
+      }
+      _page = nextPage;
+      _more = more;
       _loading = false;
+      _requesting = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return _loading
-        ? Loading()
-        : _list.isEmpty
-        ? Empty()
-        : RefreshIndicator(
-            onRefresh: () async {
-              await _loadData();
-            },
+
+    if (_loading && _items.isEmpty) {
+      return Loading();
+    }
+
+    if (_items.isEmpty) {
+      return RefreshIndicator(
+        color: Colors.white,
+        backgroundColor: Color(0xffff3d5d),
+        onRefresh: _refresh,
+        child: ListView(
+          physics: AlwaysScrollableScrollPhysics(),
+          children: [SizedBox(height: 360, child: Empty())],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      color: Colors.white,
+      backgroundColor: Color(0xffff3d5d),
+      onRefresh: _refresh,
+      child: CustomScrollView(
+        controller: _scrollController,
+        cacheExtent: 360,
+        physics: AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
+            sliver: _MovieSliverGrid(items: _items, columns: widget.columns),
+          ),
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 56,
+              child: _more && _items.isNotEmpty ? Loading() : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryMovieGrid extends StatefulWidget {
+  const _CategoryMovieGrid({super.key});
+
+  @override
+  State<_CategoryMovieGrid> createState() => _CategoryMovieGridState();
+}
+
+class _CategoryMovieGridState extends State<_CategoryMovieGrid>
+    with AutomaticKeepAliveClientMixin {
+  late final ScrollController _scrollController;
+  final List<dynamic> _items = [];
+  List<dynamic> _tags = [];
+
+  int _selectedTag = 0;
+  int _page = 0;
+  bool _loading = true;
+  bool _requesting = false;
+  bool _more = true;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController(
+      initialScrollOffset: _scrollOffsets['category'] ?? 0,
+    );
+    _scrollController.addListener(_onScroll);
+    final cache = _categoryCache;
+    if (cache != null) {
+      _tags = List<dynamic>.of(cache.tags);
+      _items.addAll(cache.items);
+      _selectedTag = cache.selectedTag;
+      _page = cache.page;
+      _more = cache.more;
+      _loading = false;
+    } else {
+      _loadTags();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_scrollController.hasClients) {
+      _scrollOffsets['category'] = _scrollController.offset;
+    }
+    _saveCategoryCache();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients || !_more || _requesting) {
+      return;
+    }
+    _scrollOffsets['category'] = _scrollController.offset;
+    final position = _scrollController.position;
+    if (position.maxScrollExtent - position.pixels < 480) {
+      _loadMovies(page: _page + 1);
+    }
+  }
+
+  Future<void> _loadTags() async {
+    final result = await api<List<dynamic>>(
+      'movie/tag-labels',
+      method: Method.post,
+      loading: false,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _tags = result.d ?? [];
+    });
+    await _loadMovies(page: 1, refresh: true);
+  }
+
+  Future<void> _refresh() async {
+    await _loadMovies(page: 1, refresh: true);
+  }
+
+  Future<void> _selectTag(int index) async {
+    if (index == _selectedTag) {
+      return;
+    }
+    setState(() {
+      _selectedTag = index;
+      _loading = true;
+      _items.clear();
+      _page = 0;
+      _more = true;
+    });
+    _scrollOffsets['category'] = 0;
+    _categoryCache = null;
+    await _loadMovies(page: 1, refresh: true);
+  }
+
+  Future<void> _loadMovies({required int page, bool refresh = false}) async {
+    if (_requesting || (!refresh && page <= _page) || (!refresh && !_more)) {
+      return;
+    }
+
+    setState(() {
+      _requesting = true;
+      if (refresh) {
+        _loading = true;
+        _more = true;
+      }
+    });
+
+    final tag = _tagId(_tags.elementAtOrNull(_selectedTag));
+    final result = await api<Map<String, dynamic>>(
+      'movie',
+      method: Method.post,
+      data: {'page': page, if (tag.isNotEmpty) 'tag': tag},
+      loading: false,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    final payload = result.d;
+    final rows = payload == null ? <dynamic>[] : _rowsFromPayload(payload);
+    final nextPage = payload == null ? page : _currentPage(payload, page);
+
+    setState(() {
+      if (refresh || page == 1) {
+        _items
+          ..clear()
+          ..addAll(rows);
+      } else {
+        _items.addAll(rows);
+      }
+      _page = nextPage;
+      _more = payload != null && _hasMore(payload, nextPage, rows.length);
+      _loading = false;
+      _requesting = false;
+    });
+    _saveCategoryCache();
+  }
+
+  void _saveCategoryCache() {
+    _categoryCache = _CategoryCache(
+      tags: List<dynamic>.of(_tags),
+      items: List<dynamic>.of(_items),
+      selectedTag: _selectedTag,
+      page: _page,
+      more: _more,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    return Column(
+      children: [
+        if (_tags.isNotEmpty)
+          SizedBox(
+            height: 44,
             child: ListView.separated(
-              separatorBuilder: (context, index) {
-                return Divider(height: 1);
-              },
-              itemCount: 10,
+              padding: EdgeInsets.symmetric(horizontal: 15),
+              scrollDirection: Axis.horizontal,
               itemBuilder: (context, index) {
-                return InkWell(
-                  onTap: () {
-                    context.push('/play', extra: {'id': _list[index]['id']});
-                  },
-                  child: Ink(
-                    padding: EdgeInsets.only(
-                      top: 16,
-                      bottom: 16,
-                      left: 16,
-                      right: 16,
-                    ),
-                    height: 128,
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      spacing: 16,
-                      children: [
-                        Stack(
-                          children: [
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: LazyImage(
-                                url: Global.static(_list[index]['image']),
-                                width: 64,
-                                height: 96,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                            Positioned(
-                              top: -12,
-                              left: -12,
-                              child: Container(
-                                width: 32,
-                                height: 32,
-                                decoration: BoxDecoration(
-                                  color: Colors.red,
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                alignment: Alignment.bottomRight,
-                              ),
-                            ),
-                            Positioned(
-                              top: -1,
-                              left: -2,
-                              child: Container(
-                                width: 20,
-                                height: 20,
-                                alignment: Alignment.center,
-                                child: Text(
-                                  (index + 1).toString(),
-                                  style: TextStyle(
-                                    height: 1,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
+                final active = index == _selectedTag;
+                return Center(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => _selectTag(index),
+                    child: AnimatedContainer(
+                      duration: Duration(milliseconds: 180),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: active ? Color(0xffff3d5d) : Color(0xff151515),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        _tagLabel(_tags[index]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          height: 1,
+                          fontWeight: active
+                              ? FontWeight.w700
+                              : FontWeight.w500,
                         ),
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _list[index]['title'],
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 16, height: 1.2),
-                              ),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                crossAxisAlignment: WrapCrossAlignment.start,
-                                runAlignment: WrapAlignment.start,
-                                children: (_list[index]['tags'] as List)
-                                    .asMap()
-                                    .entries
-                                    .where((e) => e.key < 3)
-                                    .map<Widget>((e) {
-                                      return Container(
-                                        padding: EdgeInsets.symmetric(
-                                          horizontal: 4,
-                                          vertical: 4,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white24,
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          e.value,
-                                          style: TextStyle(
-                                            height: 1,
-                                            fontSize: 14,
-                                            color: Colors.white60,
-                                          ),
-                                        ),
-                                      );
-                                    })
-                                    .toList(),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 );
               },
-            ),
-          );
-  }
-}
-
-class Category extends StatefulWidget {
-  const Category({super.key});
-
-  @override
-  State<StatefulWidget> createState() {
-    return _Category();
-  }
-}
-
-class _Category extends State<Category> with AutomaticKeepAliveClientMixin {
-  final _controller = ScrollController();
-  bool _loading = true;
-  dynamic _categories;
-  bool _latestLoading = true;
-  List<dynamic> _latest = [];
-  bool _more = true;
-  int _page = 0;
-  int _areaSelected = 0;
-  int _tagSelected = 0;
-  int _genderSelected = 0;
-  bool _requesting = false;
-
-  @override
-  bool get wantKeepAlive => true;
-
-  @override
-  initState() {
-    super.initState();
-    _controller.addListener(() {
-      if (_controller.offset == _controller.position.maxScrollExtent &&
-          _controller.position.maxScrollExtent != 0) {
-        Global.logger.d(_controller.position.maxScrollExtent);
-        _loadLatest(page: _page + 1);
-      }
-    });
-
-    _loadData().then((_) {
-      _loadLatest();
-    });
-  }
-
-  _loadData() async {
-    final result = await api('home/categories');
-    if (result.c != 0) {
-      return;
-    }
-    _categories = result.d;
-  }
-
-  _loadLatest({page = 1}) {
-    if (!_more || page <= _page) {
-      return;
-    }
-    api(
-      'movie',
-      query: {
-        'page': page,
-        'area': _areaSelected == 0
-            ? 0
-            : _categories['area'][_areaSelected - 1]['id'],
-        'tag': _tagSelected == 0
-            ? 0
-            : _categories['tags'][_tagSelected - 1]['id'],
-        'gender': _genderSelected == 0
-            ? 0
-            : _categories['gender'][_genderSelected - 1]['id'],
-      },
-    ).then((res) {
-      if (res.c != 0) {
-        return;
-      }
-
-      setState(() {
-        _loading = false;
-        _latest = [..._latest, ...res.d['data']];
-        _latestLoading = false;
-        _more = res.d['data'].length == 24 && page <= 10;
-        _page = page;
-        _requesting = false;
-      });
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    final width = (MediaQuery.of(context).size.width - 64) / 3;
-    final height = width / 3 * 4;
-
-    return _loading
-        ? Loading()
-        : Column(
-            children: [
-              // Padding(
-              //   padding: EdgeInsets.only(left: 16, right: 16, top: 8),
-              //   child: SizedBox(
-              //     height: 48,
-              //     child: Material(
-              //       type: MaterialType.transparency,
-              //       child: ListView.separated(
-              //         padding: EdgeInsets.symmetric(vertical: 8),
-              //         scrollDirection: Axis.horizontal,
-              //         separatorBuilder: (BuildContext context, int index) {
-              //           return SizedBox(width: 8);
-              //         },
-              //         itemCount: _categories['area'].length + 1,
-              //         itemBuilder: (BuildContext context, int index) {
-              //           return Tag(
-              //             text: index == 0
-              //                 ? t.all
-              //                 : _categories['area'][index - 1]['title'],
-              //             selected: _areaSelected == index,
-              //             onTap: () {
-              //               setState(() {
-              //                 _areaSelected = index;
-              //                 _page = 0;
-              //                 _more = true;
-              //                 _requesting = true;
-              //                 _loadLatest();
-              //               });
-              //             },
-              //           );
-              //         },
-              //       ),
-              //     ),
-              //   ),
-              // ),
-              Padding(
-                padding: EdgeInsets.only(left: 16, right: 16),
-                child: SizedBox(
-                  height: 48,
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: ListView.separated(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      scrollDirection: Axis.horizontal,
-                      separatorBuilder: (BuildContext context, int index) {
-                        return SizedBox(width: 8);
-                      },
-                      itemCount: _categories['tags'].length + 1,
-                      itemBuilder: (BuildContext context, int index) {
-                        return Tag(
-                          text: index == 0
-                              ? t.all
-                              : _categories['tags'][index - 1]['title'],
-                          selected: _tagSelected == index,
-                          onTap: () {
-                            setState(() {
-                              _tagSelected = index;
-                              _page = 0;
-                              _more = true;
-                              _requesting = true;
-                              _loadLatest();
-                            });
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: EdgeInsets.only(left: 16, right: 16, bottom: 8),
-                child: SizedBox(
-                  height: 48,
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: ListView.separated(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      scrollDirection: Axis.horizontal,
-                      separatorBuilder: (BuildContext context, int index) {
-                        return SizedBox(width: 8);
-                      },
-                      itemCount: _categories['gender'].length + 1,
-                      itemBuilder: (BuildContext context, int index) {
-                        return Tag(
-                          text: index == 0
-                              ? t.all
-                              : _categories['gender'][index - 1]['title'],
-                          selected: _genderSelected == index,
-                          onTap: () {
-                            setState(() {
-                              _genderSelected = index;
-                              _page = 0;
-                              _more = true;
-                              _requesting = true;
-                              _loadLatest();
-                            });
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: () async {
-                    _more = true;
-                    _page = 0;
-                    await _loadData();
-                    await _loadLatest();
-                  },
-                  child: _latestLoading
-                      ? Loading()
-                      : Padding(
-                          padding: EdgeInsets.only(left: 16, right: 16),
-                          child: Stack(
-                            children: [
-                              CustomScrollView(
-                                controller: _controller,
-                                slivers: [
-                                  SliverToBoxAdapter(
-                                    child: SizedBox(height: 16),
-                                  ),
-                                  SliverGrid.builder(
-                                    itemCount: _latest.length,
-                                    gridDelegate:
-                                        SliverGridDelegateWithFixedCrossAxisCount(
-                                          crossAxisCount: 3,
-                                          crossAxisSpacing: 16,
-                                          mainAxisSpacing: 16,
-                                          mainAxisExtent: height + 52,
-                                        ),
-                                    itemBuilder: (context, index) {
-                                      return FilmItem(
-                                        id: _latest[index]['id'],
-                                        width: width,
-                                        height: height,
-                                        image: _latest[index]['image'],
-                                        title: _latest[index]['title'],
-                                        recommend: true,
-                                      );
-                                    },
-                                  ),
-                                  _more
-                                      ? SliverToBoxAdapter(
-                                          child: Padding(
-                                            padding: EdgeInsets.only(
-                                              top: 32,
-                                              bottom: 16,
-                                            ),
-                                            child: Loading(),
-                                          ),
-                                        )
-                                      : SliverToBoxAdapter(
-                                          child: Padding(
-                                            padding: EdgeInsets.only(
-                                              top: 32,
-                                              bottom: 16,
-                                            ),
-                                            child: NoMore(),
-                                          ),
-                                        ),
-
-                                  SliverToBoxAdapter(
-                                    child: SizedBox(height: 16),
-                                  ),
-                                ],
-                              ),
-                              if (_requesting && _latest.isNotEmpty)
-                                SizedBox(height: 80, child: Loading()),
-                            ],
-                          ),
-                        ),
-                ),
-              ),
-            ],
-          );
-  }
-}
-
-class Tag extends StatelessWidget {
-  const Tag({
-    super.key,
-    required this.text,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String text;
-  final bool selected;
-  final void Function() onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Ink(
-        padding: EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          color: selected ? Colors.redAccent.withAlpha(60) : Colors.white10,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Center(
-          child: Text(
-            text,
-            style: TextStyle(
-              height: 1,
-              fontSize: 14,
-              color: selected ? Colors.red.shade400 : Colors.white60,
+              separatorBuilder: (context, index) => SizedBox(width: 8),
+              itemCount: _tags.length,
             ),
           ),
+        Expanded(
+          child: _loading && _items.isEmpty
+              ? Loading()
+              : _items.isEmpty
+              ? RefreshIndicator(
+                  color: Colors.white,
+                  backgroundColor: Color(0xffff3d5d),
+                  onRefresh: _refresh,
+                  child: ListView(
+                    physics: AlwaysScrollableScrollPhysics(),
+                    children: [SizedBox(height: 320, child: Empty())],
+                  ),
+                )
+              : RefreshIndicator(
+                  color: Colors.white,
+                  backgroundColor: Color(0xffff3d5d),
+                  onRefresh: _refresh,
+                  child: CustomScrollView(
+                    controller: _scrollController,
+                    cacheExtent: 360,
+                    physics: AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      SliverPadding(
+                        padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
+                        sliver: _MovieSliverGrid(items: _items, columns: 3),
+                      ),
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: 56,
+                          child: _more && _items.isNotEmpty ? Loading() : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MovieSliverGrid extends StatelessWidget {
+  const _MovieSliverGrid({required this.items, required this.columns});
+
+  final List<dynamic> items;
+  final int columns;
+
+  static const int _debugImageLimit = int.fromEnvironment(
+    'HOME_IMAGE_LIMIT',
+    defaultValue: 0,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final gap = columns == 2 ? 9.0 : 10.0;
+
+    final visibleItems = _debugImageLimit > 0
+        ? items.take(_debugImageLimit).toList()
+        : items;
+
+    return SliverGrid.builder(
+      itemCount: visibleItems.length,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        crossAxisSpacing: gap,
+        mainAxisSpacing: 12,
+        childAspectRatio: columns == 2 ? 0.61 : 0.56,
+      ),
+      itemBuilder: (context, index) {
+        return _MovieCard(item: visibleItems[index]);
+      },
+    );
+  }
+}
+
+class _MovieCard extends StatelessWidget {
+  const _MovieCard({required this.item});
+
+  static const bool _debugDisableImages = bool.fromEnvironment(
+    'HOME_DISABLE_IMAGES',
+  );
+
+  final dynamic item;
+
+  @override
+  Widget build(BuildContext context) {
+    final map = item is Map ? item as Map : <String, dynamic>{};
+    final imageUrl = _posterUrl(map);
+    final title = _text(map['title'] ?? map['book_title'] ?? map['name']);
+    final tags = _tagLine(map);
+
+    return RepaintBoundary(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _openPlay(context, map),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth.isFinite
+                ? constraints.maxWidth
+                : MediaQuery.sizeOf(context).width / 2;
+            final pixelRatio = MediaQuery.devicePixelRatioOf(context).clamp(
+              1.0,
+              3.0,
+            );
+            final cacheWidth = (width * pixelRatio).round();
+            final cacheHeight = (width * 4 / 3 * pixelRatio).round();
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: imageUrl.isEmpty || _debugDisableImages
+                        ? _PosterPlaceholder()
+                        : LazyImage(
+                            url: imageUrl,
+                            width: double.infinity,
+                            height: double.infinity,
+                            fit: BoxFit.cover,
+                            cacheWidth: cacheWidth,
+                            cacheHeight: cacheHeight,
+                          ),
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    height: 1.18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (tags.isNotEmpty) ...[
+                  SizedBox(height: 4),
+                  Text(
+                    tags,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Color(0xff999999),
+                      fontSize: 12,
+                      height: 1.15,
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
         ),
       ),
     );
   }
+}
+
+class _DiscoverCache {
+  const _DiscoverCache({
+    required this.items,
+    required this.page,
+    required this.more,
+  });
+
+  final List<dynamic> items;
+  final int page;
+  final bool more;
+}
+
+class _CategoryCache {
+  const _CategoryCache({
+    required this.tags,
+    required this.items,
+    required this.selectedTag,
+    required this.page,
+    required this.more,
+  });
+
+  final List<dynamic> tags;
+  final List<dynamic> items;
+  final int selectedTag;
+  final int page;
+  final bool more;
+}
+
+final Map<String, _DiscoverCache> _discoverCache = {};
+final Map<String, Future<void>> _discoverPrefetches = {};
+final Map<String, double> _scrollOffsets = {};
+_CategoryCache? _categoryCache;
+
+Future<void> _prefetchMovieGridTab(String tab) {
+  if (_discoverCache.containsKey(tab)) {
+    return Future.value();
+  }
+  final existing = _discoverPrefetches[tab];
+  if (existing != null) {
+    return existing;
+  }
+
+  final future = api<Map<String, dynamic>>(
+    'movie/discover',
+    method: Method.post,
+    data: {'page': 1, 'pageSize': 20, 'tab': tab},
+    loading: false,
+  ).then((result) {
+    final payload = result.d;
+    if (payload == null) {
+      return;
+    }
+    final rows = _rowsFromPayload(payload);
+    final page = _currentPage(payload, 1);
+    _discoverCache[tab] = _DiscoverCache(
+      items: List<dynamic>.of(rows),
+      page: page,
+      more: _hasMore(payload, page, rows.length),
+    );
+  }).whenComplete(() {
+    _discoverPrefetches.remove(tab);
+  });
+
+  _discoverPrefetches[tab] = future;
+  return future;
+}
+
+class _PosterPlaceholder extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Color(0xff151515),
+      alignment: Alignment.center,
+      child: Text(
+        AppConfig.current.brandDisplayName,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: Colors.white24,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+List<dynamic> _rowsFromPayload(Map<String, dynamic> payload) {
+  final data = payload['data'] ?? payload['list'] ?? payload['rows'];
+  return data is List ? data : <dynamic>[];
+}
+
+int _currentPage(Map<String, dynamic> payload, int fallback) {
+  final page = payload['current_page'] ?? payload['currentPage'] ?? payload['page'];
+  return int.tryParse(_text(page)) ?? fallback;
+}
+
+bool _hasMore(Map<String, dynamic> payload, int page, int rowCount) {
+  final perPage =
+      int.tryParse(_text(payload['per_page'] ?? payload['pageSize'])) ?? 20;
+  final total = int.tryParse(
+    _text(payload['count'] ?? payload['total'] ?? payload['totalCount']),
+  );
+  if (total != null && total > 0) {
+    return page * perPage < total;
+  }
+  return rowCount >= perPage;
+}
+
+void _openPlay(BuildContext context, dynamic item) {
+  if (item is! Map) {
+    return;
+  }
+
+  final id = item['id'] ?? item['movie_id'];
+  if (id == null) {
+    return;
+  }
+
+  context.push('/play', extra: {'id': id});
+}
+
+String _posterUrl(dynamic item) {
+  if (item is! Map) {
+    return '';
+  }
+  final path = _posterPath(item);
+  if (path.isEmpty) {
+    return '';
+  }
+  return Global.static(path);
+}
+
+String _posterPath(Map item) {
+  final rename = item['is_rename'];
+  final id = item['movie_id'] ?? item['id'];
+  final isRename = rename == 1 || rename == '1' || rename == true;
+  if (isRename && id != null && _text(id).isNotEmpty) {
+    return 'movie_images/$id.webp';
+  }
+
+  return _text(
+    item['image'] ??
+        item['cover'] ??
+        item['poster'] ??
+        item['cover_url'] ??
+        item['coverUrl'] ??
+        item['image_url'],
+  );
+}
+
+String _tagLine(Map item) {
+  final tags = item['tags'] ?? item['tagList'] ?? item['tag_list'];
+  if (tags is! List) {
+    return _text(item['tags_text'] ?? item['tag']);
+  }
+
+  final names = tags
+      .map((tag) {
+        if (tag is Map) {
+          return _readableTag(
+            _text(
+              tag['local_label'] ??
+                  tag['unique_id'] ??
+                  tag['source_tag_name'] ??
+                  tag['matched_unique_id'] ??
+                  tag['label'] ??
+                  tag['title'] ??
+                  tag['name'],
+            ),
+          );
+        }
+        return _readableTag(_text(tag));
+      })
+      .where((name) => name.isNotEmpty)
+      .toList();
+  return names.join('  ');
+}
+
+String _tagLabel(dynamic tag) {
+  if (tag is Map) {
+    return _text(tag['local_label'] ?? tag['name'] ?? tag['source_tag_name']);
+  }
+  return _text(tag);
+}
+
+String _tagId(dynamic tag) {
+  if (tag is Map) {
+    return _text(
+      tag['matched_unique_id'] ??
+          tag['source_tag_name'] ??
+          tag['unique_id'] ??
+          tag['name'],
+    );
+  }
+  return '';
+}
+
+String _readableTag(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty || RegExp(r'^[0-9a-fA-F]{12,}$').hasMatch(trimmed)) {
+    return '';
+  }
+  return trimmed
+      .replaceAll('_', '')
+      .split(' ')
+      .where((part) => part.trim().isNotEmpty)
+      .map((part) {
+        if (part.isEmpty) {
+          return part;
+        }
+        return part[0].toUpperCase() + part.substring(1);
+      })
+      .join(' ');
+}
+
+String _text(dynamic value) {
+  if (value == null) {
+    return '';
+  }
+  return value.toString();
 }

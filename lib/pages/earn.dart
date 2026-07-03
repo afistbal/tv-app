@@ -30,12 +30,19 @@ class _Earn extends State<Earn> {
   @override
   void initState() {
     super.initState();
+    if (widget.load) {
+      _loaded = true;
+      _loadData();
+    }
   }
 
   _loadData() async {
     final result = await api('earn');
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      _data = result.d;
+      _data = result.c == 0 && result.d != null ? result.d : _emptyEarnData();
       _loading = false;
     });
   }
@@ -50,11 +57,17 @@ class _Earn extends State<Earn> {
   }
 
   int _getTypeValue(int type) {
-    return _data['type'].firstWhere((e) => e['type'] == type)['value'];
+    final d = (_data['type'] as List).firstWhere(
+      (e) => e['type'] == type,
+      orElse: () {
+        return null;
+      },
+    );
+    return d == null ? 0 : d['value'];
   }
 
   int _getEarnValue(int type) {
-    final d = _data['earn'].firstWhere(
+    final d = (_data['earn'] as List).firstWhere(
       (e) => e['type'] == type,
       orElse: () {
         return null;
@@ -827,6 +840,20 @@ class _Earn extends State<Earn> {
       ),
     );
   }
+}
+
+Map<String, dynamic> _emptyEarnData() {
+  return {
+    'total': 0,
+    'owned': 0,
+    'today': 0,
+    'type': [],
+    'earn': [],
+    'watch_signed': false,
+    'sign_signed': false,
+    'can_sign_watch': 0,
+    'can_sign_sign': 0,
+  };
 }
 
 class Signin extends StatelessWidget {

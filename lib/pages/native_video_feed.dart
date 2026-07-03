@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -413,9 +415,9 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   Future<void> _ensureVideoReady({bool autoUnlock = false}) async {
     if (_controller != null || _loading) {
       if (widget.active) {
-        _controller?.play();
-        if (mounted) {
-          setState(() => _playButtonVisible = false);
+        final controller = _controller;
+        if (controller != null) {
+          _playController(controller);
         }
         _startAutoHide();
       }
@@ -469,6 +471,9 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     );
     _controller!.addListener(_onVideoTick);
     await _controller!.initialize();
+    if (kIsWeb) {
+      await _controller!.setVolume(0);
+    }
     if (!mounted) {
       return;
     }
@@ -478,9 +483,27 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       _playButtonVisible = false;
     });
     if (widget.active) {
-      await _controller!.play();
-      await WakelockPlus.enable();
+      await _playController(_controller!);
       _startAutoHide();
+    }
+  }
+
+  Future<void> _playController(VideoPlayerController controller) async {
+    try {
+      if (kIsWeb) {
+        await controller.setVolume(0);
+      }
+      await controller.play();
+      if (!kIsWeb) {
+        await WakelockPlus.enable();
+      }
+      if (mounted) {
+        setState(() => _playButtonVisible = false);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _playButtonVisible = true);
+      }
     }
   }
 
@@ -566,18 +589,35 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       setState(() => _playButtonVisible = true);
       WakelockPlus.disable();
     } else {
-      controller.play();
-      setState(() => _playButtonVisible = false);
-      WakelockPlus.enable();
+      _playController(controller);
     }
   }
 
-  void _onVideoTap() {
+  void _onVideoTapUp(TapUpDetails details) {
     if (_isForYou) {
       _togglePlay();
     } else {
-      _toggleUi();
+      final size = MediaQuery.sizeOf(context);
+      final dx = details.localPosition.dx - size.width / 2;
+      final dy = details.localPosition.dy - size.height / 2;
+      final tappedCenterButton = _uiVisible && dx.abs() <= 72 && dy.abs() <= 72;
+      if (tappedCenterButton) {
+        _togglePlay();
+      } else {
+        _toggleUi();
+      }
     }
+  }
+
+  void _onLongPressStart(LongPressStartDetails _) {
+    _controller?.setPlaybackSpeed(2);
+    setState(() => _uiVisible = false);
+  }
+
+  void _onLongPressEnd(LongPressEndDetails _) {
+    _controller?.setPlaybackSpeed(_speed);
+    setState(() => _uiVisible = true);
+    _startAutoHide();
   }
 
   void _toggleUi() {
@@ -632,8 +672,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       _playButtonVisible = false;
     });
     if (widget.active) {
-      await controller.play();
-      await WakelockPlus.enable();
+      await _playController(controller);
       _startAutoHide();
     }
   }
@@ -952,7 +991,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     final controller = _controller;
     final videoReady = controller?.value.isInitialized == true;
     final cover = _posterUrl(widget.item);
-    final controlsVisible = _uiVisible && !_isSeeking;
+    final controlsVisible = _isForYou ? !_isSeeking : _uiVisible && !_isSeeking;
     final centerButtonVisible =
         videoReady &&
         (_isEpisode
@@ -964,22 +1003,15 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
         ColoredBox(color: Colors.black),
         if (videoReady)
           GestureDetector(
-            onTap: _onVideoTap,
-            onLongPressStart: (_) {
-              _controller?.setPlaybackSpeed(2);
-              setState(() => _uiVisible = false);
-            },
-            onLongPressEnd: (_) {
-              _controller?.setPlaybackSpeed(_speed);
-              setState(() => _uiVisible = true);
-              _startAutoHide();
-            },
+            onTapUp: _onVideoTapUp,
+            onLongPressStart: _onLongPressStart,
+            onLongPressEnd: _onLongPressEnd,
             child: FittedBox(
               fit: BoxFit.cover,
               child: SizedBox(
                 width: _controller!.value.size.width,
                 height: _controller!.value.size.height,
-                child: VideoPlayer(_controller!),
+                child: IgnorePointer(child: VideoPlayer(_controller!)),
               ),
             ),
           )
@@ -990,13 +1022,27 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
             height: MediaQuery.of(context).size.height,
             fit: BoxFit.cover,
           ),
+        if (videoReady)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTapUp: _onVideoTapUp,
+              onLongPressStart: _onLongPressStart,
+              onLongPressEnd: _onLongPressEnd,
+            ),
+          ),
         if (_loading)
           Center(child: Loading())
         else if (!videoReady && !_lockedOverlay)
           Center(
-            child: IconButton(
-              onPressed: () => _ensureVideoReady(),
-              icon: Icon(LucideIcons.play, color: Colors.white, size: 56),
+            child: InkWell(
+              onTap: () => _ensureVideoReady(),
+              customBorder: CircleBorder(),
+              child: SvgPicture.asset(
+                'assets/images/android/ic_play.svg',
+                width: 89,
+                height: 89,
+              ),
             ),
           ),
         if (_lockedOverlay)
@@ -1135,19 +1181,19 @@ class _RightActions extends StatelessWidget {
             children: [
               if (!isVip)
                 _ActionButton(
-                  icon: LucideIcons.crown,
+                  asset: 'ic_video_vip.svg',
                   label: t.vip,
                   color: Color(0xffffd000),
                   onTap: onVip,
                 ),
               _ActionButton(
-                icon: favorite ? LucideIcons.star : LucideIcons.star,
+                asset: favorite ? 'ic_collection.svg' : 'ic_collection_nor.svg',
                 label: favoriteCount,
                 color: favorite ? Color(0xffffd000) : Colors.white,
                 onTap: onFavorite,
               ),
               _ActionButton(
-                icon: LucideIcons.share2,
+                asset: 'ic_share.svg',
                 label: t.share,
                 color: Colors.white,
                 onTap: onShare,
@@ -1162,13 +1208,13 @@ class _RightActions extends StatelessWidget {
 
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
-    required this.icon,
+    required this.asset,
     required this.label,
     required this.color,
     required this.onTap,
   });
 
-  final IconData icon;
+  final String asset;
   final String label;
   final Color color;
   final VoidCallback onTap;
@@ -1183,7 +1229,11 @@ class _ActionButton extends StatelessWidget {
           width: 44,
           child: Column(
             children: [
-              Icon(icon, color: color, size: 30),
+              SvgPicture.asset(
+                'assets/images/android/$asset',
+                width: 36,
+                height: 36,
+              ),
               SizedBox(height: 4),
               Text(
                 label,
@@ -1440,7 +1490,11 @@ class _EpisodeEntryButton extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(LucideIcons.listVideo, color: Colors.white, size: 18),
+            SvgPicture.asset(
+              'assets/images/android/ic_video_ep.svg',
+              width: 18,
+              height: 18,
+            ),
             SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -1450,7 +1504,11 @@ class _EpisodeEntryButton extends StatelessWidget {
                 style: TextStyle(color: Colors.white, fontSize: 14),
               ),
             ),
-            Icon(LucideIcons.chevronRight, color: Colors.white, size: 16),
+            SvgPicture.asset(
+              'assets/images/android/ic_arrow_all.svg',
+              width: 16,
+              height: 16,
+            ),
           ],
         ),
       ),
@@ -1493,7 +1551,11 @@ class _EpisodeTopBar extends StatelessWidget {
                   onTap: onBack,
                   child: Row(
                     children: [
-                      Icon(LucideIcons.chevronLeft, color: Colors.white),
+                      SvgPicture.asset(
+                        'assets/images/android/ic_back.svg',
+                        width: 24,
+                        height: 24,
+                      ),
                       SizedBox(width: 15),
                       SizedBox(
                         width: MediaQuery.of(context).size.width * 0.48,
@@ -1512,7 +1574,11 @@ class _EpisodeTopBar extends StatelessWidget {
                   onTap: onSpeed,
                   child: Row(
                     children: [
-                      Icon(LucideIcons.gauge, color: Colors.white, size: 18),
+                      SvgPicture.asset(
+                        'assets/images/android/ic_video_speed.svg',
+                        width: 18,
+                        height: 18,
+                      ),
                       SizedBox(width: 2),
                       Text(
                         speed == 1 ? t.speed : '${speed}x',
@@ -1538,16 +1604,13 @@ class _CenterPlayButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      iconSize: 89,
-      onPressed: onPressed,
-      icon: Icon(
-        playing ? LucideIcons.pause : LucideIcons.play,
-        color: Colors.white,
-      ),
-      style: IconButton.styleFrom(
-        backgroundColor: Colors.black.withAlpha(35),
-        shape: CircleBorder(),
+    return InkWell(
+      onTap: onPressed,
+      customBorder: CircleBorder(),
+      child: SvgPicture.asset(
+        'assets/images/android/${playing ? 'ic_pause.svg' : 'ic_play.svg'}',
+        width: 89,
+        height: 89,
       ),
     );
   }

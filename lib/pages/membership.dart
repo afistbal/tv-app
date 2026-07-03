@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/app_config.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
@@ -773,7 +774,7 @@ class _RechargeTips extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      t.payment_agreement,
+      _rechargeTips(),
       style: TextStyle(color: Color(0xff999999), fontSize: 14, height: 1.3),
     );
   }
@@ -919,4 +920,32 @@ String _text(dynamic value) {
     return '';
   }
   return value.toString().trim();
+}
+
+String _rechargeTips() {
+  final appName = AppConfig.current.brandDisplayName;
+  if (LocaleSettings.currentLocale == AppLocale.zhHant) {
+    return [
+      '儲值說明',
+      '1. $appName 提供免費與付費內容',
+      '2. 付費內容可使用金幣與獎勵金幣解鎖，或購買會員後觀看',
+      '3. 訂閱期間內，你可以不受限制地觀看 App 內所有內容',
+      '4. 訂閱成功完成後，訂閱福利將依你的訂單狀態於 24 小時內生效。',
+      '5. 目前訂閱期間結束前 24 小時內，系統會依所選方案價格從你的帳戶扣除續訂費用。續訂付款成功處理後，你的訂閱期間將自動延長。',
+      '6. 如需取消續訂，請至少在目前訂閱期間結束前 24 小時前往 App Store 取消訂閱。',
+      '7. 如果你已成功儲值且款項已扣除，但餘額未變更，請點擊「還原」嘗試重新整理。',
+      '8. 如有其他問題，請透過意見回饋聯絡我們。繼續即表示你同意我們的會員協議、付款協議與隱私權政策',
+    ].join('\n\n');
+  }
+  return [
+    'Recharge Instructions',
+    '1. $appName offers both free and paid content',
+    '2. Paid content can be unlocked using coins and reward coins, or by purchasing a membership to watch',
+    '3. During the subscription period, you can watch all content in the app without restrictions',
+    '4. Subscription benefits will take effect within 24 hours after the subscription is successfully completed, depending on the status of your order.',
+    '5. Within 24 hours before the current subscription period ends, the system will deduct the renewal fee from your account based on the price of the selected plan. After the renewal payment is successfully processed, your subscription period will be automatically extended.',
+    '6. If you need to cancel the renewal, please go to App Store to cancel the subscription at least 24 hours before the current subscription period ends.',
+    '7. If you have successfully recharged and the payment has been deducted, but the balance has not changed, please click "Restore" to try refreshing.',
+    '8. For other issues, please contact us through feedback. Continuing means you agree to our Membership Agreement, Payment Agreement and Privacy Policy',
+  ].join('\n\n');
 }

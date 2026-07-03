@@ -100,14 +100,16 @@ class _Profile extends State<Profile> {
       },
       loading: false,
     );
-    final info = result.d?['info'];
-    if (!mounted || result.c != 0 || info is! Map) {
+    final payload = result.d;
+    final nestedInfo = payload?['info'];
+    final info = nestedInfo is Map ? nestedInfo : payload;
+    if (!mounted || result.c != 0 || info == null) {
       return;
     }
 
     final value = UserStateValue(
       name: _text(info['name']).isEmpty ? 'No Name' : _text(info['name']),
-      uniqueId: _text(info['unique_id'] ?? info['uid'] ?? info['id']),
+      uniqueId: _text(info['uid'] ?? info['unique_id'] ?? info['id']),
       password: _text(info['password']),
       vip: _intValue(info['vip']),
       admin: _intValue(info['admin']),

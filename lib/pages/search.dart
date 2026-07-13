@@ -1,11 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/components/lazy_image.dart';
-import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 
@@ -35,6 +35,8 @@ class _Search extends State<Search> {
   bool _requesting = false;
   bool _hasNext = false;
   bool _searched = false;
+  int _searchGeneration = 0;
+  String _requestingKeyword = '';
 
   @override
   void initState() {
@@ -71,6 +73,8 @@ class _Search extends State<Search> {
         _results = [];
         _hasNext = false;
         _page = 1;
+        _searchGeneration++;
+        _requestingKeyword = '';
       });
       return;
     }
@@ -112,16 +116,31 @@ class _Search extends State<Search> {
   }
 
   Future<void> _search(String keyword, {required int page}) async {
-    if (keyword.isEmpty || _requesting) {
+    if (keyword.isEmpty || (page > 1 && _requesting)) {
       return;
+    }
+    if (page == 1 &&
+        _requesting &&
+        _requestingKeyword.toLowerCase() == keyword.toLowerCase()) {
+      return;
+    }
+
+    final requestGeneration = page == 1
+        ? ++_searchGeneration
+        : _searchGeneration;
+
+    if (page == 1) {
+      _requesting = true;
+      _requestingKeyword = keyword;
     }
 
     if (page == 1) {
       await _addHistory(keyword);
       setState(() {
-        _searched = true;
+        _searched = false;
         _loading = true;
         _requesting = true;
+        _requestingKeyword = keyword;
         _page = 1;
         _hasNext = false;
         _results = [];
@@ -139,7 +158,9 @@ class _Search extends State<Search> {
       loading: false,
     );
 
-    if (!mounted || keyword != _controller.text.trim()) {
+    if (!mounted ||
+        requestGeneration != _searchGeneration ||
+        keyword != _controller.text.trim()) {
       return;
     }
 
@@ -154,6 +175,7 @@ class _Search extends State<Search> {
       _hasNext = _hasNextPage(result.d, items);
       _loading = false;
       _requesting = false;
+      _requestingKeyword = '';
       _searched = true;
     });
   }
@@ -181,23 +203,53 @@ class _Search extends State<Search> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          backgroundColor: Color(0xff1f1f1f),
-          title: Text(t.delete_search_history),
-          content: Text(
-            t.clear_search_history_des,
-            style: TextStyle(color: Color(0xffcccccc), fontSize: 14),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: EdgeInsets.symmetric(horizontal: 24),
+          child: Container(
+            padding: EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Color(0xff212121),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  t.delete_search_history,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    height: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                SizedBox(height: 16),
+                Text(
+                  t.clear_search_history_des,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xff999999),
+                    fontSize: 14,
+                    height: 1.25,
+                  ),
+                ),
+                SizedBox(height: 24),
+                _SearchDialogButton(
+                  label: t.confirm,
+                  color: Color(0xffff3d5d),
+                  onPressed: () => Navigator.pop(context, true),
+                ),
+                SizedBox(height: 16),
+                _SearchDialogButton(
+                  label: t.cancel,
+                  color: Color(0xff333333),
+                  onPressed: () => Navigator.pop(context, false),
+                ),
+              ],
+            ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(t.cancel),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(t.confirm),
-            ),
-          ],
         );
       },
     );
@@ -249,7 +301,21 @@ class _Search extends State<Search> {
                 _controller.clear();
               },
             ),
-            Expanded(child: _searched ? _buildResultList() : _buildLanding()),
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Offstage(
+                    offstage: _searched,
+                    child: _buildLanding(),
+                  ),
+                  Offstage(
+                    offstage: !_searched,
+                    child: _buildResultList(),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -268,7 +334,7 @@ class _Search extends State<Search> {
             padding: EdgeInsets.symmetric(horizontal: 15),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
-                if (_history.isNotEmpty) ...[
+                if (_controller.text.trim().isEmpty && _history.isNotEmpty) ...[
                   _HistoryHeader(
                     expanded: _expandedHistory,
                     showExpand: _history.length > 6,
@@ -285,7 +351,10 @@ class _Search extends State<Search> {
                   ),
                 ],
                 if (_loadingPopular)
-                  Padding(padding: EdgeInsets.only(top: 80), child: Loading())
+                  Padding(
+                    padding: EdgeInsets.only(top: 80),
+                    child: _SearchLoading(),
+                  )
                 else if (_popular.isNotEmpty) ...[
                   Padding(
                     padding: EdgeInsets.symmetric(vertical: 10),
@@ -295,7 +364,6 @@ class _Search extends State<Search> {
                         color: Colors.white,
                         fontSize: 16,
                         height: 1.2,
-                        fontWeight: FontWeight.w800,
                       ),
                     ),
                   ),
@@ -312,10 +380,46 @@ class _Search extends State<Search> {
 
   Widget _buildResultList() {
     if (_loading) {
-      return Center(child: Loading());
+      return ListView(
+        physics: AlwaysScrollableScrollPhysics(),
+        children: [SizedBox(height: 40)],
+      );
     }
     if (_results.isEmpty) {
-      return _SearchEmpty();
+      return RefreshIndicator(
+        onRefresh: () => _search(_controller.text.trim(), page: 1),
+        color: Colors.white,
+        backgroundColor: Color(0xff222222),
+        child: ListView(
+          controller: _scrollController,
+          physics: AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          children: [
+            _SearchEmpty(),
+            if (_loadingPopular)
+              _SearchLoading()
+            else if (_popular.isNotEmpty) ...[
+              Padding(
+                padding: EdgeInsets.fromLTRB(15, 0, 15, 10),
+                child: Text(
+                  t.popular_now,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    height: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 15),
+                child: _PopularGrid(items: _popular),
+              ),
+              SizedBox(height: 32),
+            ],
+          ],
+        ),
+      );
     }
     return RefreshIndicator(
       onRefresh: () => _search(_controller.text.trim(), page: 1),
@@ -330,11 +434,77 @@ class _Search extends State<Search> {
           if (index >= _results.length) {
             return Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
-              child: Center(child: Loading()),
+              child: _SearchLoading(),
             );
           }
           return _SearchResultItem(item: _results[index]);
         },
+      ),
+    );
+  }
+}
+
+class _SearchLoading extends StatelessWidget {
+  const _SearchLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 40,
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xff999999)),
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              t.loading,
+              style: TextStyle(
+                color: Color(0xff999999),
+                fontSize: 14,
+                height: 1,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchDialogButton extends StatelessWidget {
+  const _SearchDialogButton({
+    required this.label,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final String label;
+  final Color color;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 44,
+      child: TextButton(
+        style: TextButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+        onPressed: onPressed,
+        child: Text(label, style: TextStyle(fontSize: 16)),
       ),
     );
   }
@@ -382,7 +552,7 @@ class _Toolbar extends StatelessWidget {
                 height: 36,
                 padding: EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
-                  color: Color(0xff151515),
+                  color: Color(0xff333333),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -394,31 +564,49 @@ class _Toolbar extends StatelessWidget {
                     ),
                     SizedBox(width: 10),
                     Expanded(
-                      child: TextField(
-                        controller: controller,
-                        focusNode: focusNode,
-                        maxLength: 32,
-                        textInputAction: TextInputAction.done,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          height: 1.1,
-                        ),
-                        cursorColor: Colors.white,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          counterText: '',
-                          border: InputBorder.none,
-                          hintText: t.search_anything_you_like,
-                          hintStyle: TextStyle(
-                            color: Color(0xff999999),
-                            fontSize: 14,
+                      child: Theme(
+                        data: Theme.of(context).copyWith(
+                          inputDecorationTheme: InputDecorationTheme(
+                            filled: false,
+                            fillColor: Colors.transparent,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
                           ),
                         ),
-                        onSubmitted: onSubmit,
-                        onTapOutside: (_) {
-                          FocusManager.instance.primaryFocus?.unfocus();
-                        },
+                        child: TextField(
+                          controller: controller,
+                          focusNode: focusNode,
+                          maxLength: 32,
+                          textInputAction: TextInputAction.done,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            height: 1.1,
+                          ),
+                          cursorColor: Colors.white,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            filled: false,
+                            fillColor: Colors.transparent,
+                            contentPadding: EdgeInsets.zero,
+                            counterText: '',
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                            hintText: t.search_anything_you_like,
+                            hintStyle: TextStyle(
+                              color: Color(0xff999999),
+                              fontSize: 14,
+                            ),
+                          ),
+                          onSubmitted: onSubmit,
+                          onTapOutside: (_) {
+                            FocusManager.instance.primaryFocus?.unfocus();
+                          },
+                        ),
                       ),
                     ),
                     ValueListenableBuilder<TextEditingValue>(
@@ -432,10 +620,18 @@ class _Toolbar extends StatelessWidget {
                           borderRadius: BorderRadius.circular(12),
                           child: Padding(
                             padding: EdgeInsets.all(4),
-                            child: Icon(
-                              LucideIcons.x,
-                              color: Color(0xff999999),
-                              size: 16,
+                            child: Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                color: Color(0xff999999).withAlpha(128),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                LucideIcons.x,
+                                color: Colors.white,
+                                size: 11,
+                              ),
                             ),
                           ),
                         );
@@ -477,7 +673,7 @@ class _HistoryHeader extends StatelessWidget {
               style: TextStyle(
                 color: Color(0xff999999),
                 fontSize: 14,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
@@ -635,7 +831,7 @@ class _PopularGrid extends StatelessWidget {
                         color: Colors.white,
                         fontSize: 14,
                         height: 1.15,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ],
@@ -697,7 +893,7 @@ class _SearchResultItem extends StatelessWidget {
                         color: Colors.white,
                         fontSize: 14,
                         height: 1.2,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                     SizedBox(height: 4),
@@ -738,31 +934,23 @@ class _SearchResultItem extends StatelessWidget {
 class _SearchEmpty extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: EdgeInsets.only(bottom: 72),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset(
-              'assets/images/android/ic_logo_loading.png',
-              width: 128,
-              height: 128,
-              errorBuilder: (context, error, stackTrace) {
-                return Icon(
-                  LucideIcons.searchX,
-                  color: Color(0xff555555),
-                  size: 96,
-                );
-              },
-            ),
-            SizedBox(height: 8),
-            Text(
-              t.no_search_found,
-              style: TextStyle(color: Color(0xff999999), fontSize: 14),
-            ),
-          ],
-        ),
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 60),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SvgPicture.asset(
+            'assets/images/android/ic_logo_loading.svg',
+            width: 128,
+            height: 128,
+            fit: BoxFit.none,
+          ),
+          SizedBox(height: 8),
+          Text(
+            t.no_search_found,
+            style: TextStyle(color: Color(0xff999999), fontSize: 14),
+          ),
+        ],
       ),
     );
   }
@@ -779,7 +967,7 @@ class _ImagePlaceholder extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      color: Color(0xff191919),
+      color: Color(0xff212121),
       alignment: Alignment.center,
       child: Icon(LucideIcons.image, color: Colors.white24, size: 24),
     );
@@ -844,17 +1032,48 @@ String _posterUrl(Map<String, dynamic> item) {
 List<String> _tagNames(Map<String, dynamic> item) {
   final raw = item['tagList'] ?? item['tag_list'] ?? item['tags'];
   if (raw is List) {
-    return raw
-        .map((tag) {
-          if (tag is Map) {
-            return _text(tag['name'] ?? tag['title']);
-          }
-          return _text(tag);
-        })
-        .where((name) => name.isNotEmpty)
-        .toList();
+    return raw.map(_tagName).where((name) => name.isNotEmpty).toList();
   }
   return [];
+}
+
+String _tagName(dynamic tag) {
+  if (tag is Map) {
+    final candidates = [
+      tag['name'],
+      tag['source_tag_name'],
+      tag['local_label'],
+      tag['matched_unique_id'],
+      tag['label'],
+      tag['title'],
+      tag['unique_id'],
+    ];
+    for (final candidate in candidates) {
+      final value = _formatTag(_text(candidate));
+      if (value.isNotEmpty && !_looksLikeTagId(value)) {
+        return value;
+      }
+    }
+    return '';
+  }
+  final value = _formatTag(_text(tag));
+  return _looksLikeTagId(value) ? '' : value;
+}
+
+String _formatTag(String value) {
+  final normalized = value.replaceAll('_', ' ').trim();
+  if (normalized.isEmpty) {
+    return '';
+  }
+  return normalized
+      .split(RegExp(r'\s+'))
+      .where((word) => word.isNotEmpty)
+      .map((word) => word[0].toUpperCase() + word.substring(1))
+      .join(' ');
+}
+
+bool _looksLikeTagId(String value) {
+  return RegExp(r'^[0-9a-fA-F]{6,}$').hasMatch(value.trim());
 }
 
 String _text(dynamic value) {

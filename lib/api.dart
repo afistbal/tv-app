@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:dio/dio.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
@@ -21,14 +21,31 @@ Future<Result<T>> api<T>(
   Method method = Method.get,
   Map<String, dynamic>? query,
   bool loading = false,
+  bool showError = true,
   Object? data,
+  bool retryOnAuthFailure = true,
 }) async {
   Response response;
-  final os = Global.webPreview ? 'android' : Platform.operatingSystem;
-  final source = Global.webPreview
+  final webAndroidPreview = kIsWeb && !Global.webPreview;
+  final webIosPreview = Global.webPreview;
+  final os = webIosPreview
+      ? 'ios'
+      : webAndroidPreview
+      ? 'android'
+      : Platform.operatingSystem;
+  final source = webAndroidPreview
       ? 'A100APPANDROID'
-      : 'A100APP${Platform.isIOS ? 'IOS' : 'ANDROID'}';
-  final platform = Global.webPreview ? 'Android' : 'app';
+      : 'A100APP${(webIosPreview || Platform.isIOS) ? 'IOS' : 'ANDROID'}';
+  final platform = webAndroidPreview
+      ? 'Android'
+      : webIosPreview || Platform.isIOS
+      ? 'IOS'
+      : 'Android';
+  final requiresAuth = _requiresAuth(path);
+  if (requiresAuth && (Global.sp.getString('token') ?? '').isEmpty) {
+    await Global.ensureAnonymousSession();
+  }
+
   Map<String, String> headers = {
     'Accept-Language': LocaleSettings.currentLocale.languageCode,
     'Accept': 'application/json',
@@ -37,14 +54,20 @@ Future<Result<T>> api<T>(
     'X-Test': Global.sp.getString('test') ?? '123456789',
     'X-Source': source,
     'X-App-Flag': AppConfig.current.flag,
-    'X-Version':
-        '${Global.packageInfo.version}.${Global.packageInfo.buildNumber}',
   };
 
   String token = Global.sp.getString('token') ?? '';
 
   if (token != '') {
     headers['Authorization'] = 'Bearer $token';
+  }
+  final adjustAdid = Global.sp.getString('adjust_adid') ?? '';
+  final adjustAttribution = Global.sp.getString('adjust_attribution') ?? '';
+  if (adjustAdid.isNotEmpty) {
+    headers['X-Adjust-Adid'] = adjustAdid;
+  }
+  if (adjustAttribution.isNotEmpty) {
+    headers['X-Adjust-Attribution'] = adjustAttribution;
   }
 
   Result result = Result<T>(1, '', null);
@@ -84,10 +107,6 @@ Future<Result<T>> api<T>(
         result.m = 'Server error.';
         break;
       case 401:
-        if (!Global.webPreview) {
-          await Global.sp.remove('token');
-          await FirebaseAuth.instance.signOut();
-        }
         result.m = 'Authentication Failure.';
         break;
       case 403:
@@ -108,9 +127,31 @@ Future<Result<T>> api<T>(
     }
   }
 
-  if (result.c != 0 && result.m != '') {
+  if (retryOnAuthFailure &&
+      requiresAuth &&
+      result.m == 'Authentication Failure.') {
+    await Global.sp.remove('token');
+    final refreshed = await Global.ensureAnonymousSession(force: true);
+    if (refreshed) {
+      return api<T>(
+        path,
+        method: method,
+        query: query,
+        loading: false,
+        showError: showError,
+        data: data,
+        retryOnAuthFailure: false,
+      );
+    }
+  }
+
+  if (showError && result.c != 0 && result.m != '') {
     Global.error(result.m);
   }
 
   return result as Result<T>;
+}
+
+bool _requiresAuth(String path) {
+  return !path.startsWith('config') && !path.startsWith('login/');
 }

@@ -1,6 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 
 class LazyImage extends StatefulWidget {
@@ -30,52 +29,21 @@ class LazyImage extends StatefulWidget {
 class _LazyImage extends State<LazyImage> {
   @override
   Widget build(BuildContext context) {
+    if (widget.url.trim().isEmpty) {
+      return _ImageStandIn(width: widget.width, height: widget.height);
+    }
     if (Global.webPreview) {
-      return Stack(
-        children: [
-          Container(
-            width: widget.width,
-            height: widget.height,
-            color: Color(0x10ffffff),
-            alignment: Alignment.center,
-            child: Text(
-              AppConfig.current.brandDisplayName,
-              style: TextStyle(
-                color: Colors.white24,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          Image.network(
-            widget.url,
-            width: widget.width,
-            height: widget.height,
-            fit: widget.fit,
-            cacheWidth: widget.cacheWidth,
-            cacheHeight: widget.cacheHeight,
-            filterQuality: FilterQuality.low,
-            gaplessPlayback: true,
-            webHtmlElementStrategy: WebHtmlElementStrategy.fallback,
-            errorBuilder: (context, error, stackTrace) {
-              Global.logger.d(error);
-              return Container(
-                width: widget.width,
-                height: widget.height,
-                color: Color(0x10ffffff),
-                alignment: Alignment.center,
-                child: Text(
-                  AppConfig.current.brandDisplayName,
-                  style: TextStyle(
-                    color: Colors.red.withAlpha(100),
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
+      return Image.network(
+        widget.url,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        filterQuality: FilterQuality.low,
+        gaplessPlayback: true,
+        webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+        errorBuilder: (context, error, stackTrace) {
+          return _ImageStandIn(width: widget.width, height: widget.height);
+        },
       );
     }
 
@@ -91,34 +59,28 @@ class _LazyImage extends State<LazyImage> {
       placeholderFadeInDuration: Duration.zero,
       useOldImageOnUrlChange: true,
       placeholder: (context, url) {
-        return Container(
-          color: Color(0x10ffffff),
-          alignment: Alignment.center,
-          child: Text(
-            AppConfig.current.brandDisplayName,
-            style: TextStyle(
-              color: Colors.white24,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        );
+        return _ImageStandIn(width: widget.width, height: widget.height);
       },
       errorWidget: (context, url, error) {
         Global.logger.d(error);
-        return Container(
-          color: Color(0x10ffffff),
-          alignment: Alignment.center,
-          child: Text(
-            AppConfig.current.brandDisplayName,
-            style: TextStyle(
-              color: Colors.red.withAlpha(100),
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        );
+        return _ImageStandIn(width: widget.width, height: widget.height);
       },
+    );
+  }
+}
+
+class _ImageStandIn extends StatelessWidget {
+  const _ImageStandIn({required this.width, required this.height});
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      height: height,
+      child: ColoredBox(color: Color(0xff212121)),
     );
   }
 }

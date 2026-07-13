@@ -1,26 +1,24 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
-import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/states/main.dart';
 import 'package:yogotv/states/user.dart';
 
 class Profile extends StatefulWidget {
-  const Profile({super.key});
+  const Profile({super.key, this.active = true});
+
+  final bool active;
 
   @override
   State<Profile> createState() => _Profile();
 }
 
 class _Profile extends State<Profile> {
-  late final StreamSubscription<UserStateValue?> _userListener;
-
   bool _loading = false;
   bool _isVip = false;
   String _vipExpire = '';
@@ -29,18 +27,16 @@ class _Profile extends State<Profile> {
   @override
   void initState() {
     super.initState();
-    _userListener = context.read<UserState>().stream.listen((_) {
-      if (mounted) {
-        _loadData(silent: true);
-      }
-    });
+    _isVip = context.read<UserState>().isVip;
     _loadData();
   }
 
   @override
-  void dispose() {
-    _userListener.cancel();
-    super.dispose();
+  void didUpdateWidget(covariant Profile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active) {
+      _loadData(silent: true);
+    }
   }
 
   Future<void> _loadData({bool silent = false}) async {
@@ -48,7 +44,6 @@ class _Profile extends State<Profile> {
       setState(() => _loading = true);
     }
 
-    final userFuture = _loadUserInfo();
     final balanceFuture = api<dynamic>(
       'user/balance',
       method: Method.post,
@@ -60,7 +55,6 @@ class _Profile extends State<Profile> {
       loading: false,
     );
 
-    await userFuture;
     final balance = await balanceFuture;
     final vip = await vipFuture;
 
@@ -71,9 +65,15 @@ class _Profile extends State<Profile> {
     final vipPayload = vip.d ?? {};
     final expire = int.tryParse('${vipPayload['vip_expire_at'] ?? 0}') ?? 0;
     final userState = context.read<UserState>();
-    final isVip = expire > 0 || userState.isVip;
-    if (isVip && !userState.isVip) {
-      userState.setVip(1);
+    final responseIsVip =
+        vipPayload['is_vip'] == true ||
+        vipPayload['vip'] == 1 ||
+        vipPayload['vip'] == true ||
+        expire > 0;
+    final isVip = vip.c == 0 ? responseIsVip : userState.isVip;
+    final nextVipValue = isVip ? 1 : 0;
+    if ((userState.state?.vip ?? 0) != nextVipValue) {
+      userState.setVip(nextVipValue);
     }
 
     setState(() {
@@ -82,49 +82,6 @@ class _Profile extends State<Profile> {
       _vipExpire = _expireText(expire);
       _loading = false;
     });
-  }
-
-  Future<void> _loadUserInfo() async {
-    final token = Global.sp.getString('token') ?? '';
-    if (token.isEmpty) {
-      return;
-    }
-
-    final deviceUuid = Global.sp.getString('device_uuid') ?? '';
-    final result = await api<Map<String, dynamic>>(
-      'login/token',
-      method: Method.post,
-      data: {
-        'token': token,
-        if (deviceUuid.isNotEmpty) 'device_uuid': deviceUuid,
-      },
-      loading: false,
-    );
-    final payload = result.d;
-    final nestedInfo = payload?['info'];
-    final info = nestedInfo is Map ? nestedInfo : payload;
-    if (!mounted || result.c != 0 || info == null) {
-      return;
-    }
-
-    final value = UserStateValue(
-      name: _text(info['name']).isEmpty ? 'No Name' : _text(info['name']),
-      uniqueId: _text(info['uid'] ?? info['unique_id'] ?? info['id']),
-      password: _text(info['password']),
-      vip: _intValue(info['vip']),
-      admin: _intValue(info['admin']),
-      anonymous: _intValue(info['anonymous']),
-    );
-    final current = context.read<UserState>().state;
-    if (current == null ||
-        current.name != value.name ||
-        current.uniqueId != value.uniqueId ||
-        current.password != value.password ||
-        current.vip != value.vip ||
-        current.admin != value.admin ||
-        current.anonymous != value.anonymous) {
-      context.read<UserState>().set(value);
-    }
   }
 
   @override
@@ -151,7 +108,7 @@ class _Profile extends State<Profile> {
                           child: Align(
                             alignment: Alignment.centerRight,
                             child: _SettingsButton(
-                              onTap: () => context.push('/about'),
+                              onTap: () => context.push('/settings'),
                             ),
                           ),
                         ),
@@ -168,8 +125,8 @@ class _Profile extends State<Profile> {
                       _AccountCard(
                         coins: _coins,
                         loading: _loading,
-                        onDetails: () => context.push('/earn/detail'),
-                        onTopUp: () => _openMembership(context),
+                        onDetails: () => context.push('/wallet'),
+                        onTopUp: () => _openTopUp(context),
                       ),
                       SizedBox(height: 12),
                       _MineMenuItem(
@@ -180,7 +137,11 @@ class _Profile extends State<Profile> {
                         },
                       ),
                       _MineMenuItem(
-                        icon: LucideIcons.languages,
+                        leading: SvgPicture.asset(
+                          'assets/images/android/ic_language_mine.svg',
+                          width: 24,
+                          height: 24,
+                        ),
                         label: t.language,
                         onTap: () => context.push('/language'),
                       ),
@@ -189,12 +150,6 @@ class _Profile extends State<Profile> {
                         label: t.feedback_help,
                         onTap: () => context.push('/help'),
                       ),
-                      if (context.read<UserState>().isAdmin)
-                        _MineMenuItem(
-                          icon: LucideIcons.userCog,
-                          label: t.admin,
-                          onTap: () => context.push('/admin'),
-                        ),
                       SizedBox(height: 10),
                     ],
                   ),
@@ -236,7 +191,7 @@ class _UserHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final isAnonymous = user == null || user!.anonymous == 1;
     final name = isAnonymous ? t.log_in : user!.name;
-    final uid = user?.uniqueId ?? Global.sp.getString('uid') ?? '';
+    final uid = user?.uid ?? '';
 
     return InkWell(
       onTap: isAnonymous ? () => context.push('/login') : null,
@@ -244,12 +199,25 @@ class _UserHeader extends StatelessWidget {
       child: Row(
         children: [
           ClipOval(
-            child: Image.asset(
-              'assets/images/android/ic_avatar_guest.png',
-              width: 48,
-              height: 48,
-              fit: BoxFit.cover,
-            ),
+            child: user?.avatarUrl.isNotEmpty == true
+                ? Image.network(
+                    user!.avatarUrl,
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => Image.asset(
+                      'assets/images/android/ic_avatar_guest.png',
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.cover,
+                    ),
+                  )
+                : Image.asset(
+                    'assets/images/android/ic_avatar_guest.png',
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                  ),
           ),
           SizedBox(width: 15),
           Expanded(
@@ -285,9 +253,7 @@ class _UserHeader extends StatelessWidget {
                 ),
                 SizedBox(height: 5),
                 Text(
-                  uid.isEmpty
-                      ? _formatNative(t.uid_s, '--')
-                      : _formatNative(t.uid_s, uid),
+                  t.uid_s(s: uid.isEmpty ? '--' : uid),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -467,9 +433,8 @@ class _VipUnlockedCard extends StatelessWidget {
                             SizedBox(width: 4),
                             Expanded(
                               child: Text(
-                                _formatNative(
-                                  t.app_name_vip,
-                                  AppConfig.current.brandDisplayName,
+                                t.app_name_vip(
+                                  s: AppConfig.current.brandDisplayName,
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -487,7 +452,7 @@ class _VipUnlockedCard extends StatelessWidget {
                         Text(
                           expireText.isEmpty
                               ? ''
-                              : _formatNative(t.valid_until_s, expireText),
+                              : t.valid_until_s(s: expireText),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -663,12 +628,14 @@ class _AccountCard extends StatelessWidget {
 
 class _MineMenuItem extends StatelessWidget {
   const _MineMenuItem({
-    required this.icon,
+    this.icon,
+    this.leading,
     required this.label,
     required this.onTap,
   });
 
-  final IconData icon;
+  final IconData? icon;
+  final Widget? leading;
   final String label;
   final VoidCallback onTap;
 
@@ -680,7 +647,7 @@ class _MineMenuItem extends StatelessWidget {
         height: 56,
         child: Row(
           children: [
-            Icon(icon, color: Colors.white, size: 24),
+            leading ?? Icon(icon, color: Colors.white, size: 24),
             SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -714,18 +681,8 @@ void _openMembership(BuildContext context) {
   context.push('/membership');
 }
 
-int _intValue(dynamic value) {
-  if (value is int) {
-    return value;
-  }
-  if (value is bool) {
-    return value ? 1 : 0;
-  }
-  return int.tryParse('${value ?? 0}') ?? 0;
-}
-
-String _text(dynamic value) {
-  return value?.toString().trim() ?? '';
+void _openTopUp(BuildContext context) {
+  context.push('/top-up');
 }
 
 String _expireText(int seconds) {
@@ -736,8 +693,4 @@ String _expireText(int seconds) {
   return '${date.year.toString().padLeft(4, '0')}-'
       '${date.month.toString().padLeft(2, '0')}-'
       '${date.day.toString().padLeft(2, '0')}';
-}
-
-String _formatNative(String template, String value) {
-  return template.replaceAll('%s', value);
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:go_router/go_router.dart';
+import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/states/restart.dart';
@@ -51,29 +53,61 @@ class _LanguageState extends State<Language> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(t.language)),
-      body: ListView.separated(
-        padding: EdgeInsets.symmetric(vertical: 8),
-        separatorBuilder: (context, _) => Divider(height: 1),
-        itemCount: languages.length,
-        itemBuilder: (context, index) {
-          final languageCode = languages.keys.elementAt(index);
-          final active = _language == languageCode;
-          return ListTile(
-            onTap: () => _changeLanguage(languageCode),
-            contentPadding: EdgeInsets.symmetric(horizontal: 16),
-            title: Text(
-              languages.values.elementAt(index),
-              style: TextStyle(
-                color: active ? Color(0xffff3d5d) : Colors.white,
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            AndroidToolbar(title: t.language, onBack: context.pop),
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: languages.length,
+                itemBuilder: (context, index) {
+                  final languageCode = languages.keys.elementAt(index);
+                  final active = _language == languageCode;
+                  return InkWell(
+                    onTap: () => _changeLanguage(languageCode),
+                    child: SizedBox(
+                      height: 56,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 15),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                languages.values.elementAt(index),
+                                textAlign: TextAlign.start,
+                                style: TextStyle(
+                                  color: active
+                                      ? Color(0xffff3d5d)
+                                      : Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w400,
+                                  height: 1.2,
+                                ),
+                              ),
+                            ),
+                            SizedBox(width: 10),
+                            SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: active
+                                  ? SvgPicture.asset(
+                                      'assets/images/android/ic_select.svg',
+                                    )
+                                  : null,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
-            trailing: Icon(
-              active ? LucideIcons.circleCheck : LucideIcons.circle,
-              color: active ? Color(0xffff3d5d) : Colors.white38,
-            ),
-          );
-        },
+          ],
+        ),
       ),
     );
   }

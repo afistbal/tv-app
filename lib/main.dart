@@ -10,20 +10,20 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:firebase_core/firebase_core.dart' show Firebase;
 import 'package:go_router/go_router.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:internet_connection_checker_plus/internet_connection_checker_plus.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
+import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/pages/alert.dart';
 import 'package:yogotv/firebase_options.dart' show DefaultFirebaseOptions;
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/pages/about.dart';
-import 'package:yogotv/pages/admin.dart';
 import 'package:yogotv/pages/airwallex.dart';
 import 'package:yogotv/pages/earn_detail.dart';
 import 'package:yogotv/pages/earn_withdraw.dart';
 import 'package:yogotv/pages/home.dart';
 import 'package:yogotv/pages/language.dart';
+import 'package:yogotv/pages/label_video.dart';
 import 'package:yogotv/pages/login.dart';
 import 'package:yogotv/pages/membership.dart';
 import 'package:yogotv/pages/my_list.dart';
@@ -32,11 +32,14 @@ import 'package:yogotv/pages/recommend.dart';
 import 'package:yogotv/pages/search.dart';
 import 'package:yogotv/pages/play.dart';
 import 'package:yogotv/pages/help.dart';
+import 'package:yogotv/pages/settings.dart';
+import 'package:yogotv/pages/wallet.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/splash.dart';
 import 'package:yogotv/states/main.dart';
 import 'package:yogotv/states/restart.dart';
 import 'package:yogotv/states/user.dart';
+import 'package:yogotv/video_playback_session.dart';
 
 Future main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
@@ -46,18 +49,18 @@ Future main() async {
   );
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
-  while (!await InternetConnection().hasInternetAccess) {
-    await Future.delayed(Duration(seconds: 1));
-  }
-
   await Global.init();
+  unawaited(() async {
+    await Global.initTracking();
+    await AdjustTracking.init();
+  }());
   final savedLocale = Global.sp.getString('locale');
   if (savedLocale == null) {
     await LocaleSettings.setLocale(AppLocale.en);
   } else {
     await LocaleSettings.setLocaleRaw(savedLocale);
   }
-  if (!Global.webPreview) {
+  if (!kIsWeb && !Global.webPreview) {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
@@ -99,6 +102,16 @@ final _router = GoRouter(
       },
     ),
     GoRoute(
+      path: '/label',
+      builder: (context, state) {
+        final data = state.extra as Map<String, dynamic>? ?? {};
+        return LabelVideo(
+          title: data['title']?.toString() ?? '',
+          tagId: data['id']?.toString() ?? '',
+        );
+      },
+    ),
+    GoRoute(
       path: '/login',
       builder: (context, state) {
         return _previewRoute(Login());
@@ -117,15 +130,41 @@ final _router = GoRouter(
       },
     ),
     GoRoute(
+      path: '/settings',
+      builder: (context, state) {
+        return Settings();
+      },
+    ),
+    GoRoute(
       path: '/help',
       builder: (context, state) {
         return Help();
       },
     ),
     GoRoute(
+      path: '/wallet',
+      builder: (context, state) {
+        return Wallet();
+      },
+    ),
+    GoRoute(
+      path: '/wallet/history',
+      builder: (context, state) {
+        return WalletHistory(type: state.extra as int? ?? 1);
+      },
+    ),
+    GoRoute(
       path: '/membership',
       builder: (context, state) {
         return _previewRoute(Membership());
+      },
+    ),
+    GoRoute(
+      path: '/top-up',
+      builder: (context, state) {
+        return _previewRoute(
+          TopUpPage(episodeCoins: state.extra?.toString() ?? '0'),
+        );
       },
     ),
     GoRoute(
@@ -144,12 +183,6 @@ final _router = GoRouter(
       path: '/recommend',
       builder: (context, state) {
         return Recommend();
-      },
-    ),
-    GoRoute(
-      path: '/admin',
-      builder: (context, state) {
-        return Admin();
       },
     ),
     GoRoute(
@@ -187,13 +220,14 @@ class App extends StatelessWidget {
         ),
         BlocProvider<UserState>(
           create: (context) {
-            return UserState();
+            return UserState(Global.cachedUserState());
           },
         ),
       ],
       child: MaterialApp.router(
         key: Global.appKey,
         debugShowCheckedModeBanner: false,
+        scrollBehavior: const _YogoScrollBehavior(),
         builder: (context, child) {
           child = BotToastInit()(context, child);
           return child;
@@ -202,15 +236,15 @@ class App extends StatelessWidget {
           splashColor: Color(0x05ffffff),
           hintColor: Colors.transparent,
           highlightColor: Colors.transparent,
-          scaffoldBackgroundColor: Color(0xff151515),
+          scaffoldBackgroundColor: Colors.black,
           colorScheme: ColorScheme.dark(
-            primary: Color.fromARGB(255, 239, 68, 68),
+            primary: Color(0xffff3d5d),
             secondaryContainer: Color(0xff666666),
             onSecondaryContainer: Colors.white,
             onPrimary: Colors.white,
           ),
           appBarTheme: AppBarTheme(
-            backgroundColor: Color(0xff111111),
+            backgroundColor: Colors.black,
             foregroundColor: Colors.white,
             surfaceTintColor: Colors.transparent,
             systemOverlayStyle: SystemUiOverlayStyle(
@@ -219,8 +253,8 @@ class App extends StatelessWidget {
             ),
           ),
           bottomNavigationBarTheme: BottomNavigationBarThemeData(
-            selectedItemColor: Color.fromARGB(255, 239, 68, 68),
-            backgroundColor: Color(0xff111111),
+            selectedItemColor: Color(0xffff3d5d),
+            backgroundColor: Colors.black,
           ),
           dividerTheme: DividerThemeData(color: Color(0x10ffffff)),
           inputDecorationTheme: InputDecorationTheme(
@@ -250,8 +284,8 @@ class App extends StatelessWidget {
               color: Colors.white38,
             ),
             focusColor: Colors.white12,
-            fillColor: Color(0x10ffffff),
-            filled: true,
+            fillColor: Colors.transparent,
+            filled: false,
             prefixIconColor: Colors.white54,
           ),
           buttonTheme: ButtonThemeData(
@@ -275,6 +309,21 @@ class App extends StatelessWidget {
   }
 }
 
+class _YogoScrollBehavior extends MaterialScrollBehavior {
+  const _YogoScrollBehavior();
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) {
+    final platform = getPlatform(context);
+    if (platform == TargetPlatform.iOS || platform == TargetPlatform.macOS) {
+      return const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
+      );
+    }
+    return super.getScrollPhysics(context);
+  }
+}
+
 class Main extends StatefulWidget {
   const Main({super.key});
 
@@ -287,6 +336,7 @@ class Main extends StatefulWidget {
 class _Main extends State<Main> {
   final channel = MethodChannel('yogotv.com/channel');
   StreamSubscription<RestartStateValue>? _restartListener;
+  final Set<int> _loadedTabs = {0};
   bool _loading = true;
   // bool _initialized = false;
 
@@ -330,79 +380,13 @@ class _Main extends State<Main> {
     }
     Global.elapsed('App initialized');
     FlutterNativeSplash.remove();
-    if (Global.webPreview) {
+    if (kIsWeb || Global.webPreview) {
       setState(() {
         _loading = false;
       });
       return;
     }
-    MobileAds.instance.initialize().then((status) async {
-      Global.elapsed('Mobile Ads initialized');
-      await MobileAds.instance.updateRequestConfiguration(
-        RequestConfiguration(
-          testDeviceIds: ['6AC6039CD7E9873F6F9A0B635B9434A1'],
-        ),
-      );
-      Global.elapsed('Mobile Ads configuration finished');
-      // splashAd((status) {
-      //   Global.login(context).then((signed) {
-      //     if (!signed) {
-      //       return;
-      //     }
-      //     setState(() {
-      //       _loading = false;
-      //       _initialized = true;
-      //     });
-      //   });
-      // });
-
-      if (mounted) {
-        Global.login(context)
-            .then((signed) {
-              if (!signed) {
-                return;
-              }
-              setState(() {
-                _loading = false;
-                // _initialized = true;
-              });
-            })
-            .then((_) async {
-              await Purchase.init();
-              api('config').then((res) async {
-                if (res.d['tiktok_event']['enable'] != true) {
-                  return;
-                }
-
-                await TikTokEventsSdk.initSdk(
-                  androidAppId: res.d['tiktok_event']['android_app_id'],
-                  tikTokAndroidId: res.d['tiktok_event']['tiktok_android_id'],
-                  iosAppId: res.d['tiktok_event']['ios_app_id'],
-                  tiktokIosId: res.d['tiktok_event']['tiktok_ios_id'],
-                  isDebugMode: kDebugMode,
-                  logLevel: kDebugMode
-                      ? TikTokLogLevel.debug
-                      : TikTokLogLevel.info,
-                  iosOptions: TikTokIosOptions(
-                    disableTracking: Global.tracking ? false : true,
-                    disableAutomaticTracking: true,
-                    disableSKAdNetworkSupport: true,
-                    accessToken: res.d['tiktok_event']['ios_token'],
-                  ),
-                  androidOptions: TikTokAndroidOptions(
-                    disableAutoStart: true,
-                    enableAutoIapTrack: true,
-                    disableAdvertiserIDCollection: false,
-                  ),
-                );
-                Global.logger.d('tiktok initialized');
-                // TikTokEventsSdk.logEvent(
-                //   event: TikTokEvent(eventName: 'launch_app'),
-                // );
-              });
-            });
-      }
-    });
+    unawaited(_startAppServices());
 
     _restartListener = context.read<RestartState>().stream.listen((
       value,
@@ -416,6 +400,7 @@ class _Main extends State<Main> {
       setState(() {
         _loading = true;
       });
+      VideoPlaybackSession.silenceAllNow();
       context.read<MainState>().setIndex(0);
       await Future.delayed(Duration(seconds: 1));
       setState(() {
@@ -424,7 +409,76 @@ class _Main extends State<Main> {
     });
   }
 
+  Future<void> _startAppServices() async {
+    await Global.restoreSession(context);
+    if (mounted) {
+      setState(() {
+        _loading = false;
+        // _initialized = true;
+      });
+    }
+
+    try {
+      await MobileAds.instance.initialize();
+      Global.elapsed('Mobile Ads initialized');
+      await MobileAds.instance.updateRequestConfiguration(
+        RequestConfiguration(
+          testDeviceIds: ['6AC6039CD7E9873F6F9A0B635B9434A1'],
+        ),
+      );
+      Global.elapsed('Mobile Ads configuration finished');
+    } catch (error) {
+      Global.logger.d('mobile ads init skipped: $error');
+    }
+
+    await Purchase.init();
+    api('config')
+        .then((res) async {
+          if (res.d['tiktok_event']['enable'] != true) {
+            return;
+          }
+
+          try {
+            await TikTokEventsSdk.initSdk(
+              androidAppId: res.d['tiktok_event']['android_app_id'],
+              tikTokAndroidId: res.d['tiktok_event']['tiktok_android_id'],
+              iosAppId: res.d['tiktok_event']['ios_app_id'],
+              tiktokIosId: res.d['tiktok_event']['tiktok_ios_id'],
+              isDebugMode: kDebugMode,
+              logLevel: kDebugMode ? TikTokLogLevel.debug : TikTokLogLevel.info,
+              iosOptions: TikTokIosOptions(
+                disableTracking: Global.tracking ? false : true,
+                disableAutomaticTracking: true,
+                disableSKAdNetworkSupport: true,
+                accessToken: res.d['tiktok_event']['ios_token'],
+              ),
+              androidOptions: TikTokAndroidOptions(
+                disableAutoStart: true,
+                enableAutoIapTrack: true,
+                disableAdvertiserIDCollection: false,
+              ),
+            );
+            Global.logger.d('tiktok initialized');
+          } catch (error) {
+            Global.logger.d('tiktok init skipped: $error');
+          }
+          // TikTokEventsSdk.logEvent(
+          //   event: TikTokEvent(eventName: 'launch_app'),
+          // );
+        })
+        .catchError((error) {
+          Global.logger.d('tiktok config skipped: $error');
+        });
+  }
+
   void _handleChangeIndex(int value) {
+    final current = context.read<MainState>().state.current;
+    if (current != value) {
+      VideoPlaybackSession.silenceAllNow();
+    }
+    setState(() {
+      _loadedTabs.add(value);
+    });
     context.read<MainState>().setIndex(value);
   }
 
@@ -445,10 +499,16 @@ class _Main extends State<Main> {
                     child: IndexedStack(
                       index: state.current,
                       children: [
-                        Home(),
-                        Recommend(),
-                        MyList(load: state.current == 2),
-                        Profile(),
+                        _loadedTabs.contains(0) ? Home() : SizedBox.shrink(),
+                        _loadedTabs.contains(1)
+                            ? Recommend(active: state.current == 1)
+                            : SizedBox.shrink(),
+                        _loadedTabs.contains(2)
+                            ? MyList(load: state.current == 2)
+                            : SizedBox.shrink(),
+                        _loadedTabs.contains(3)
+                            ? Profile(active: state.current == 3)
+                            : SizedBox.shrink(),
                       ],
                     ),
                   ),

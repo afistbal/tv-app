@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
+import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
+import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
@@ -23,6 +25,50 @@ class Membership extends StatefulWidget {
   State<Membership> createState() => _MembershipState();
 }
 
+enum VipPayResult { vip, coins }
+
+Future<VipPayResult?> showVipPayBottomSheet(
+  BuildContext context, {
+  String episodeCoins = '0',
+}) {
+  return showModalBottomSheet<VipPayResult>(
+    context: context,
+    isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: false,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) => FractionallySizedBox(
+      heightFactor: 0.8,
+      alignment: Alignment.bottomCenter,
+      child: _VipPaySheet(episodeCoins: episodeCoins),
+    ),
+  );
+}
+
+class TopUpPage extends StatelessWidget {
+  const TopUpPage({super.key, this.episodeCoins = '0'});
+
+  final String episodeCoins;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xff151515),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            AndroidToolbar(title: t.top_up, onBack: context.pop),
+            Expanded(
+              child: _VipPaySheet(episodeCoins: episodeCoins, fullPage: true),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _MembershipState extends State<Membership> with WidgetsBindingObserver {
   late final StreamSubscription<UserStateValue?> _userStateListener;
 
@@ -33,10 +79,12 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
   String? _selectedId;
   List<dynamic> _subscriptions = [];
   List<dynamic> _vipVideos = [];
+  bool _viewContentTracked = false;
 
   @override
   void initState() {
     super.initState();
+    Global.payTrace('VIP page entered build=verify-order-cache-v2');
     WidgetsBinding.instance.addObserver(this);
     if (!kIsWeb && Platform.isIOS) {
       Purchase.canProcess = true;
@@ -67,8 +115,10 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadData() async {
-    setState(() => _loading = true);
+  Future<void> _loadData({bool showLoading = true}) async {
+    if (showLoading && mounted) {
+      setState(() => _loading = true);
+    }
 
     final vipFuture = api<Map<String, dynamic>>(
       'user/membership',
@@ -82,15 +132,23 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     );
     final productsFuture = _loadProducts();
 
-    final vip = await vipFuture;
-    final videos = await videosFuture;
-    final products = await productsFuture;
+    Result<Map<String, dynamic>>? vip;
+    Result<List<dynamic>>? videos;
+    List<dynamic> products = _subscriptions;
+    try {
+      vip = await vipFuture;
+      videos = await videosFuture;
+      products = await productsFuture;
+    } on Exception catch (error) {
+      Global.logger.d('membership_load_failed $error');
+      Global.payTrace('membership reload failed');
+    }
 
     if (!mounted) {
       return;
     }
 
-    final vipPayload = vip.d ?? {};
+    final vipPayload = vip?.d ?? {};
     final expire = int.tryParse('${vipPayload['vip_expire_at'] ?? 0}') ?? 0;
     final isVip = expire > 0 || context.read<UserState>().isVip;
     final subscriptions = products;
@@ -98,27 +156,41 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     setState(() {
       _isVip = isVip;
       _vipExpire = _expireText(expire);
-      _vipVideos = videos.d ?? [];
+      _vipVideos = videos?.d ?? _vipVideos;
       _subscriptions = subscriptions;
       _selectedId = _selectedId ?? _defaultSelectedId(subscriptions);
       _loading = false;
     });
+    if (!_viewContentTracked) {
+      _viewContentTracked = true;
+      AdjustTracking.trackViewContent();
+    }
   }
 
   Future<List<dynamic>> _loadProducts() async {
-    final nativeProducts = await api<Map<String, dynamic>>(
-      'ggPay/products',
+    final path = _applePayMode ? 'applePay/products' : 'product';
+    if (_applePayMode) {
+      await Global.ensureAnonymousSession();
+    }
+    Global.payTrace('products request path=$path');
+    var products = await api<dynamic>(
+      path,
       method: Method.post,
-      data: {'type': 10},
+      data: _applePayMode ? {} : {'type': 10},
       loading: false,
     );
-    final nativeRows = _subscriptionRows(nativeProducts.d);
-    if (nativeRows.isNotEmpty) {
-      return nativeRows;
+    if (_applePayMode && products.m == 'Authentication Failure.') {
+      Global.payTrace('products auth failed, refresh anonymous session');
+      await Global.ensureAnonymousSession(force: true);
+      products = await api<dynamic>(
+        path,
+        method: Method.post,
+        data: {},
+        loading: false,
+      );
     }
-
-    final legacyProducts = await api<List<dynamic>>('product', loading: false);
-    return _subscriptionRows(legacyProducts.d);
+    Global.payTrace('products response c=${products.c} m=${products.m}');
+    return _subscriptionRows(products.d);
   }
 
   Future<void> _handleRestore() async {
@@ -131,55 +203,82 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
   }
 
   Future<void> _handleSubscribe() async {
-    final product = _subscriptions.firstWhere(
-      (item) => _productId(item) == _selectedId,
-      orElse: () => null,
-    );
+    final product = _selectedSubscription();
     if (product == null) {
       Global.warning(t.please_select_a_vip_plan);
       return;
     }
 
     final price = double.tryParse(_text(product['price'])) ?? 0;
-    if (!kIsWeb && Platform.isIOS) {
-      await TikTokEventsSdk.logEvent(
-        event: TikTokEvent(
-          eventName: 'checkout',
-          properties: EventProperties(
-            description: _storeProductId(product),
-            value: price,
-            currency: CurrencyCode.USD,
-          ),
-        ),
+    if (_applePayMode) {
+      final storeProductId = _storeProductId(product);
+      await _trackCheckout(storeProductId: storeProductId, price: price);
+      Global.payTrace('membership subscribe call IAP');
+      if (Global.webPreview) {
+        final result = await Purchase.previewCreate(
+          localProductId: _productId(product),
+          appleProductId: storeProductId,
+          type: 1,
+        );
+        Global.payTrace('membership preview create returned=$result');
+        if (mounted) {
+          setState(() => _loading = false);
+        }
+        return;
+      }
+      final result = await Purchase.making(
+        localProductId: _productId(product),
+        appleProductId: storeProductId,
+        type: 1,
       );
-      final result = await Purchase.making(product: _storeProductId(product));
+      Global.payTrace('membership IAP returned=$result');
       if (result) {
         await TikTokEventsSdk.logEvent(
           event: TikTokEvent(
             eventName: 'subscribe',
             properties: EventProperties(
-              description: _storeProductId(product),
+              description: storeProductId,
               value: price,
               currency: CurrencyCode.USD,
             ),
           ),
         );
+        Global.payTrace('membership refresh user');
         await _refreshUser();
-        await _loadData();
+        if (!mounted) {
+          return;
+        }
+        Global.payTrace('membership reload products');
+        final userVip = context.read<UserState>().isVip;
+        setState(() {
+          _isVip = userVip || _isVip;
+          _loading = false;
+        });
+        unawaited(_loadData(showLoading: false));
       }
       return;
     }
 
     final result = await api<dynamic>(
-      'ggPay/create',
+      'pay/create',
       method: Method.post,
-      data: {'product_id': _productId(product), 'isOfferAvailable': false},
+      data: {'payment': 1, 'product_id': _productId(product)},
       loading: true,
     );
     if (result.c == 0) {
-      Global.success(t.success);
       _restore = true;
+      Global.success(t.success);
     }
+  }
+
+  dynamic _selectedSubscription() {
+    for (final item in _subscriptions) {
+      if (_productId(item) == _selectedId) {
+        return item;
+      }
+    }
+    Global.payTrace('membership selected product missing id=$_selectedId');
+    return null;
   }
 
   Future<void> _refreshUser() async {
@@ -190,18 +289,17 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     );
     final data = user.d;
     if (!mounted || data == null) {
+      Global.payTrace('membership user refresh empty c=${user.c}');
       return;
     }
-    context.read<UserState>().set(
-      UserStateValue(
-        name: data['name'] ?? 'No Name',
-        uniqueId: data['unique_id'],
-        password: data['password'],
-        vip: data['vip'],
-        admin: data['admin'],
-        anonymous: data['anonymous'],
-      ),
+    Global.logger.d(
+      'membership_refresh_user vip=${data['vip']} anonymous=${data['anonymous']}',
     );
+    Global.payTrace('membership user vip=${data['vip']}');
+    final value = await Global.cacheUserInfo(data);
+    if (value != null && mounted) {
+      context.read<UserState>().set(value);
+    }
   }
 
   @override
@@ -210,101 +308,575 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(''),
-        actions: [
-          if (!kIsWeb && Platform.isIOS)
-            TextButton(
-              onPressed: _handleRestore,
-              child: Text(
-                t.restore,
-                style: TextStyle(color: Colors.white, fontSize: 14),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            AndroidToolbar(title: t.membership, onBack: context.pop),
+            Expanded(
+              child: _loading
+                  ? Loading()
+                  : Column(
+                      children: [
+                        Expanded(
+                          child: RefreshIndicator(
+                            color: Colors.white,
+                            backgroundColor: Color(0xffff3d5d),
+                            onRefresh: _loadData,
+                            child: ListView(
+                              physics: AlwaysScrollableScrollPhysics(),
+                              padding: EdgeInsets.fromLTRB(15, 8, 15, 15),
+                              children: [
+                                _UserHeader(
+                                  name: _userName(user),
+                                  isVip: _isVip,
+                                  vipExpire: _vipExpire,
+                                ),
+                                if (!_isVip) ...[
+                                  SizedBox(height: 14),
+                                  _SectionTitle(t.choose_vip_plan),
+                                  SizedBox(height: 2),
+                                  ..._subscriptions.map(
+                                    (item) => Padding(
+                                      padding: EdgeInsets.only(bottom: 12),
+                                      child: _VipPlanCard(
+                                        item: item,
+                                        selected:
+                                            _productId(item) == _selectedId,
+                                        onTap: () {
+                                          setState(() {
+                                            _selectedId = _productId(item);
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                SizedBox(height: 14),
+                                _VipBenefitsPanel(),
+                                if (_vipVideos.isNotEmpty) ...[
+                                  SizedBox(height: 14),
+                                  _SectionTitle(t.vip_exclusives),
+                                  SizedBox(height: 14),
+                                  _VipExclusiveGrid(items: _vipVideos),
+                                ],
+                                SizedBox(height: 14),
+                                _RechargeTips(),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (!_isVip)
+                          SafeArea(
+                            top: false,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Padding(
+                                  padding: EdgeInsets.fromLTRB(15, 12, 15, 0),
+                                  child: _SubscribeButton(
+                                    onTap: _handleSubscribe,
+                                  ),
+                                ),
+                                Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 15,
+                                    vertical: 8,
+                                  ),
+                                  child: Text(
+                                    t.cancel_auto_renewal_anytime,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Color(0xff999999),
+                                      fontSize: 14,
+                                      height: 1.2,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VipPaySheet extends StatefulWidget {
+  const _VipPaySheet({required this.episodeCoins, this.fullPage = false});
+
+  final String episodeCoins;
+  final bool fullPage;
+
+  @override
+  State<_VipPaySheet> createState() => _VipPaySheetState();
+}
+
+class _VipPaySheetState extends State<_VipPaySheet> {
+  bool _loading = true;
+  String _balance = '0';
+  String? _selectedId;
+  List<dynamic> _subscriptions = [];
+  List<dynamic> _coins = [];
+
+  @override
+  void initState() {
+    super.initState();
+    Global.payTrace('VIP sheet entered build=verify-order-cache-v2');
+    if (!kIsWeb && Platform.isIOS) {
+      Purchase.canProcess = true;
+    }
+    _loadData();
+    AdjustTracking.trackViewContent();
+  }
+
+  Future<void> _loadData() async {
+    final productPath = _applePayMode ? 'applePay/products' : 'product';
+    if (_applePayMode) {
+      await Global.ensureAnonymousSession();
+    }
+    Global.payTrace('products request path=$productPath');
+    final productsFuture = api<dynamic>(
+      productPath,
+      method: Method.post,
+      data: _applePayMode ? {} : {'type': 10},
+      loading: false,
+    );
+    final balanceFuture = api<dynamic>(
+      'user/balance',
+      method: Method.post,
+      loading: false,
+    );
+
+    var products = await productsFuture;
+    final balance = await balanceFuture;
+    if (_applePayMode && products.m == 'Authentication Failure.') {
+      Global.payTrace('products auth failed, refresh anonymous session');
+      await Global.ensureAnonymousSession(force: true);
+      products = await api<dynamic>(
+        productPath,
+        method: Method.post,
+        data: {},
+        loading: false,
+      );
+    }
+    Global.payTrace('products response c=${products.c} m=${products.m}');
+    if (!mounted) {
+      return;
+    }
+    final subscriptions = _subscriptionRows(products.d);
+    final coins = _purchaseRows(products.d);
+    setState(() {
+      _subscriptions = subscriptions;
+      _coins = coins;
+      _balance = _cleanNumber(balance.d);
+      _selectedId =
+          _selectedId ??
+          _defaultSelectedId(subscriptions) ??
+          (coins.isEmpty ? null : _productId(coins.first));
+      _loading = false;
+    });
+  }
+
+  Future<void> _pay(dynamic product) async {
+    setState(() => _selectedId = _productId(product));
+    final price = double.tryParse(_text(product['price'])) ?? 0;
+    final storeProductId = _storeProductId(product);
+    if (_applePayMode) {
+      await _trackCheckout(storeProductId: storeProductId, price: price);
+      Global.payTrace('sheet pay call IAP result=${_payResultFor(product)}');
+      final payResult = _payResultFor(product);
+      final type = payResult == VipPayResult.coins ? 2 : 1;
+      if (Global.webPreview) {
+        final result = await Purchase.previewCreate(
+          localProductId: _productId(product),
+          appleProductId: storeProductId,
+          type: type,
+        );
+        Global.payTrace('sheet preview create returned=$result');
+        return;
+      }
+      final result = await Purchase.making(
+        localProductId: _productId(product),
+        appleProductId: storeProductId,
+        type: type,
+      );
+      Global.payTrace('sheet IAP returned=$result');
+      if (result) {
+        if (payResult == VipPayResult.coins) {
+          await _refreshBalance();
+        }
+        await TikTokEventsSdk.logEvent(
+          event: TikTokEvent(
+            eventName: 'subscribe',
+            properties: EventProperties(
+              description: storeProductId,
+              value: price,
+              currency: CurrencyCode.USD,
+            ),
+          ),
+        );
+        Global.payTrace('sheet refresh user');
+        await _refreshUser();
+        if (!mounted) {
+          return;
+        }
+        Global.payTrace('sheet close with ${_payResultFor(product)}');
+        Navigator.of(context).pop(_payResultFor(product));
+      }
+      return;
+    }
+
+    final result = await api<dynamic>(
+      'pay/create',
+      method: Method.post,
+      data: {'payment': 1, 'product_id': _productId(product)},
+      loading: true,
+    );
+    if (result.c == 0) {
+      final productId = int.tryParse(_productId(product));
+      if (productId == null) {
+        Global.error(t.failed);
+        return;
+      }
+      if (!mounted) {
+        return;
+      }
+      context.push('/airwallex', extra: {'product': productId});
+    }
+  }
+
+  VipPayResult _payResultFor(dynamic product) {
+    final productId = _productId(product);
+    final coinProduct = _coins.any((item) => _productId(item) == productId);
+    return coinProduct ? VipPayResult.coins : VipPayResult.vip;
+  }
+
+  Future<void> _refreshUser() async {
+    final user = await api<Map<String, dynamic>>(
+      'user',
+      method: Method.get,
+      loading: false,
+    );
+    final data = user.d;
+    if (!mounted || data == null) {
+      Global.payTrace('sheet user refresh empty c=${user.c}');
+      return;
+    }
+    Global.logger.d(
+      'vip_sheet_refresh_user vip=${data['vip']} anonymous=${data['anonymous']}',
+    );
+    Global.payTrace('sheet user vip=${data['vip']}');
+    final value = await Global.cacheUserInfo(data);
+    if (value != null && mounted) {
+      context.read<UserState>().set(value);
+    }
+  }
+
+  Future<void> _refreshBalance() async {
+    final balance = await api<dynamic>(
+      'user/balance',
+      method: Method.post,
+      loading: false,
+    );
+    Global.payTrace(
+      'sheet balance refresh c=${balance.c} value=${balance.d}',
+    );
+    if (!mounted || balance.c != 0) {
+      return;
+    }
+    setState(() => _balance = _cleanNumber(balance.d));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isVip = context.read<UserState>().isVip;
+    return ClipRRect(
+      borderRadius: widget.fullPage
+          ? BorderRadius.zero
+          : BorderRadius.vertical(top: Radius.circular(12)),
+      child: Material(
+        color: Color(0xff151515),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 15),
+            child: Column(
+              children: [
+                if (!widget.fullPage)
+                  _VipPayBalanceRow(
+                    episodeCoins: widget.episodeCoins,
+                    balance: _balance,
+                    onClose: () => Navigator.pop(context),
+                  ),
+                Expanded(
+                  child: _loading
+                      ? Loading()
+                      : SingleChildScrollView(
+                          physics: AlwaysScrollableScrollPhysics(),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!isVip && _subscriptions.isNotEmpty) ...[
+                                Text(
+                                  t.membership,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                  ),
+                                ),
+                                SizedBox(height: 12),
+                                ..._subscriptions.map(
+                                  (item) => Padding(
+                                    padding: EdgeInsets.only(bottom: 12),
+                                    child: _VipPlanCard(
+                                      item: item,
+                                      selected: _productId(item) == _selectedId,
+                                      onTap: () => _pay(item),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (_coins.isNotEmpty) ...[
+                                if (!isVip && _subscriptions.isNotEmpty)
+                                  SizedBox(height: 5),
+                                if (widget.fullPage) ...[
+                                  Text(
+                                    t.coins,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                  SizedBox(height: 12),
+                                ],
+                                GridView.builder(
+                                  shrinkWrap: true,
+                                  physics: NeverScrollableScrollPhysics(),
+                                  itemCount: _coins.length,
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 2,
+                                        crossAxisSpacing: 14,
+                                        mainAxisSpacing: 12,
+                                        childAspectRatio: 1.92,
+                                      ),
+                                  itemBuilder: (context, index) {
+                                    final item = _coins[index];
+                                    return _CoinPlanCard(
+                                      item: item,
+                                      selected: _productId(item) == _selectedId,
+                                      onTap: () => _pay(item),
+                                    );
+                                  },
+                                ),
+                              ],
+                              SizedBox(height: 15),
+                              _RechargeTips(),
+                              SizedBox(height: 15),
+                            ],
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VipPayBalanceRow extends StatelessWidget {
+  const _VipPayBalanceRow({
+    required this.episodeCoins,
+    required this.balance,
+    required this.onClose,
+  });
+
+  final String episodeCoins;
+  final String balance;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 60,
+      child: Row(
+        children: [
+          Text(
+            t.this_episode,
+            style: TextStyle(color: Color(0xff999999), fontSize: 14),
+          ),
+          SizedBox(width: 4),
+          Image.asset('assets/images/android/ic_coin.png', width: 14),
+          SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              episodeCoins,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+          SizedBox(width: 12),
+          Text(
+            t.balance,
+            style: TextStyle(color: Color(0xff999999), fontSize: 14),
+          ),
+          SizedBox(width: 4),
+          Image.asset('assets/images/android/ic_coin.png', width: 14),
+          SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              balance,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+          InkWell(
+            onTap: onClose,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: EdgeInsets.all(2),
+              child: SvgPicture.asset(
+                'assets/images/android/ic_close.svg',
+                width: 24,
+                height: 24,
               ),
             ),
+          ),
         ],
       ),
-      body: _loading
-          ? Loading()
-          : Column(
+    );
+  }
+}
+
+class _CoinPlanCard extends StatelessWidget {
+  const _CoinPlanCard({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final dynamic item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final coin = _coinAmount(item);
+    final price = _text(item['price']);
+    final bonusValue = _bonusValue(item);
+    final bonusCoins = _bonusCoins(item);
+    final bonus = bonusCoins == 0 ? '' : '+${_cleanNumber(bonusCoins)}';
+    final bg = selected
+        ? [Color(0xffffecd4), Color(0xfff3cb93)]
+        : [Color(0xff332f2a), Color(0xff332f2a)];
+    final textColor = selected ? Color(0xff633e25) : Colors.white;
+    final priceBg = selected
+        ? [Color(0xffc17846), Color(0xff603c24)]
+        : [Color(0x594e4e4e), Color(0x594e4e4e)];
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Ink(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: bg),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Stack(
+          children: [
+            if (bonusValue > 0)
+              PositionedDirectional(
+                top: 0,
+                end: 0,
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: selected
+                          ? [Color(0xffea6f3c), Color(0xffeba341)]
+                          : [Color(0xff46372c), Color(0xff46372c)],
+                    ),
+                    borderRadius: BorderRadiusDirectional.only(
+                      topEnd: Radius.circular(12),
+                      bottomStart: Radius.circular(12),
+                    ),
+                  ),
+                  child: Text(
+                    '+${(bonusValue * 100).toInt()}%',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ),
+            Column(
               children: [
                 Expanded(
-                  child: RefreshIndicator(
-                    color: Colors.white,
-                    backgroundColor: Color(0xffff3d5d),
-                    onRefresh: _loadData,
-                    child: ListView(
-                      physics: AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.fromLTRB(15, 8, 15, 15),
-                      children: [
-                        _UserHeader(
-                          name: _userName(user),
-                          isVip: _isVip,
-                          vipExpire: _vipExpire,
-                        ),
-                        if (!_isVip) ...[
-                          SizedBox(height: 14),
-                          _SectionTitle(t.choose_vip_plan),
-                          SizedBox(height: 2),
-                          ..._subscriptions.map(
-                            (item) => Padding(
-                              padding: EdgeInsets.only(bottom: 12),
-                              child: _VipPlanCard(
-                                item: item,
-                                selected: _productId(item) == _selectedId,
-                                onTap: () {
-                                  setState(() {
-                                    _selectedId = _productId(item);
-                                  });
-                                },
-                              ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Image.asset(
+                            'assets/images/android/ic_coin.png',
+                            width: 20,
+                            height: 20,
+                          ),
+                          SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              coin,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: textColor, fontSize: 18),
                             ),
                           ),
                         ],
-                        SizedBox(height: 14),
-                        _VipBenefitsPanel(),
-                        if (_vipVideos.isNotEmpty) ...[
-                          SizedBox(height: 14),
-                          _SectionTitle(t.vip_exclusives),
-                          SizedBox(height: 14),
-                          _VipExclusiveGrid(items: _vipVideos),
-                        ],
-                        SizedBox(height: 14),
-                        _RechargeTips(),
+                      ),
+                      if (bonus.isNotEmpty) ...[
+                        SizedBox(height: 4),
+                        Text(
+                          bonus,
+                          style: TextStyle(
+                            color: textColor.withAlpha(191),
+                            fontSize: 14,
+                          ),
+                        ),
                       ],
+                    ],
+                  ),
+                ),
+                Container(
+                  width: double.infinity,
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: priceBg),
+                    borderRadius: BorderRadius.vertical(
+                      bottom: Radius.circular(12),
+                    ),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '\$${_moneyValue(price)}',
+                    style: TextStyle(
+                      color: selected ? Colors.white : Color(0xfff1da97),
+                      fontSize: 14,
                     ),
                   ),
                 ),
-                if (!_isVip)
-                  SafeArea(
-                    top: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Padding(
-                          padding: EdgeInsets.fromLTRB(15, 12, 15, 0),
-                          child: _SubscribeButton(onTap: _handleSubscribe),
-                        ),
-                        Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 15,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            t.cancel_auto_renewal_anytime,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Color(0xff999999),
-                              fontSize: 14,
-                              height: 1.2,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
               ],
             ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -347,7 +919,7 @@ class _UserHeader extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 18,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ),
@@ -393,7 +965,7 @@ class _SectionTitle extends StatelessWidget {
         style: TextStyle(
           color: Colors.white,
           fontSize: 16,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w400,
         ),
       ),
     );
@@ -413,19 +985,35 @@ class _VipPlanCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final title = _productTitle(item);
     final basePlan = _planId(item);
-    final title = basePlan == 'yearly' ? t.yearly_vip : t.weekly_vip;
-    final firstPrice = _text(
-      item['first_price'] ?? item['firstPrice'] ?? item['price'],
-    );
     final price = _text(item['price']);
-    final hasOffer = basePlan == 'weekly' && firstPrice.isNotEmpty;
-    final displayPrice = hasOffer ? firstPrice : price;
+    final explicitFirstPrice = _text(item['first_price'] ?? item['firstPrice']);
+    final renewalPrice = _text(item['renewal_price'] ?? item['renewalPrice']);
+    final offerPrice = explicitFirstPrice.isNotEmpty
+        ? explicitFirstPrice
+        : price;
+    final renewalAfterOffer = explicitFirstPrice.isNotEmpty
+        ? price
+        : renewalPrice;
+    final hasOffer =
+        basePlan == 'weekly' &&
+        offerPrice.isNotEmpty &&
+        renewalAfterOffer.isNotEmpty &&
+        _moneyNumber(offerPrice) < _moneyNumber(renewalAfterOffer);
+    final displayPrice = hasOffer ? offerPrice : price;
+    final bonusValue = _bonusValue(item);
+    final discountPercent = hasOffer
+        ? _discountPercent(offerPrice, renewalAfterOffer)
+        : 0;
+    final badgeText = !hasOffer && bonusValue > 0
+        ? '+${(bonusValue * 100).toInt()}%'
+        : '';
     final description = basePlan == 'weekly'
         ? (hasOffer
               ? t.first_week_string_then_string_week(
-                  firstPrice: _moneyParam(firstPrice),
-                  price: _moneyParam(price),
+                  s: _moneyParam(offerPrice),
+                  s2: _moneyParam(renewalAfterOffer),
                 )
               : t.auto_renewal_cancel_anytime)
         : t.auto_renewal_cancel_anytime;
@@ -438,6 +1026,7 @@ class _VipPlanCard extends StatelessWidget {
         ? Color(0xff633e25).withAlpha(190)
         : Colors.white.withAlpha(190);
     final benefitColor = selected ? Color(0xff633e25) : Color(0xfff1da97);
+    final benefitSuffix = selected ? '0' : '1';
 
     return Material(
       color: Colors.transparent,
@@ -480,7 +1069,7 @@ class _VipPlanCard extends StatelessWidget {
                                 style: TextStyle(
                                   color: textColor,
                                   fontSize: 16,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                               SizedBox(height: 8),
@@ -522,7 +1111,7 @@ class _VipPlanCard extends StatelessWidget {
                                   ? Colors.white
                                   : Color(0xfff1da97),
                               fontSize: 16,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
@@ -543,22 +1132,22 @@ class _VipPlanCard extends StatelessWidget {
                       runSpacing: 10,
                       children: [
                         _PlanBenefit(
-                          icon: LucideIcons.play,
+                          asset: 'ic_benefit_short_$benefitSuffix.svg',
                           text: t.unlimited_viewing,
                           color: benefitColor,
                         ),
                         _PlanBenefit(
-                          icon: LucideIcons.sparkles,
+                          asset: 'ic_benefit_hd_$benefitSuffix.svg',
                           text: t.hd_quality,
                           color: benefitColor,
                         ),
                         _PlanBenefit(
-                          icon: LucideIcons.badgeX,
+                          asset: 'ic_benefit_ad_$benefitSuffix.svg',
                           text: t.ad_free,
                           color: benefitColor,
                         ),
                         _PlanBenefit(
-                          icon: LucideIcons.gem,
+                          asset: 'ic_benefit_benefit_$benefitSuffix.svg',
                           text: t.more_benefits,
                           color: benefitColor,
                         ),
@@ -567,6 +1156,38 @@ class _VipPlanCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (discountPercent > 0 || badgeText.isNotEmpty)
+                PositionedDirectional(
+                  top: 0,
+                  end: 0,
+                  child: hasOffer
+                      ? _OfferCountdownBadge()
+                      : Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: selected
+                                  ? [Color(0xffea6f3c), Color(0xffeba341)]
+                                  : [Color(0xff46372c), Color(0xff46372c)],
+                            ),
+                            borderRadius: BorderRadiusDirectional.only(
+                              topEnd: Radius.circular(12),
+                              bottomStart: Radius.circular(12),
+                            ),
+                          ),
+                          child: Text(
+                            badgeText,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                ),
             ],
           ),
         ),
@@ -577,12 +1198,12 @@ class _VipPlanCard extends StatelessWidget {
 
 class _PlanBenefit extends StatelessWidget {
   const _PlanBenefit({
-    required this.icon,
+    required this.asset,
     required this.text,
     required this.color,
   });
 
-  final IconData icon;
+  final String asset;
   final String text;
   final Color color;
 
@@ -592,7 +1213,11 @@ class _PlanBenefit extends StatelessWidget {
       width: (MediaQuery.of(context).size.width - 30 - 30 - 8) / 2,
       child: Row(
         children: [
-          Icon(icon, size: 16, color: color),
+          SvgPicture.asset(
+            'assets/images/android/$asset',
+            width: 16,
+            height: 16,
+          ),
           SizedBox(width: 4),
           Expanded(
             child: Text(
@@ -600,6 +1225,87 @@ class _PlanBenefit extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: color, fontSize: 10),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OfferCountdownBadge extends StatefulWidget {
+  @override
+  State<_OfferCountdownBadge> createState() => _OfferCountdownBadgeState();
+}
+
+class _OfferCountdownBadgeState extends State<_OfferCountdownBadge> {
+  static const _offerDuration = Duration(minutes: 30);
+  late final DateTime _startedAt;
+  late final Timer _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startedAt = DateTime.now();
+    _timer = Timer.periodic(Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final elapsed = DateTime.now().difference(_startedAt);
+    var remaining = _offerDuration - elapsed;
+    if (remaining.isNegative) {
+      remaining = _offerDuration;
+    }
+    final minutes = remaining.inMinutes
+        .remainder(60)
+        .toString()
+        .padLeft(2, '0');
+    final seconds = remaining.inSeconds
+        .remainder(60)
+        .toString()
+        .padLeft(2, '0');
+
+    return Container(
+      padding: EdgeInsetsDirectional.only(start: 11, end: 9, top: 3, bottom: 3),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xfffd36bc), Color(0xfffd3a5a)],
+        ),
+        borderRadius: BorderRadiusDirectional.only(
+          topEnd: Radius.circular(12),
+          bottomStart: Radius.circular(12),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SvgPicture.string(
+            '''
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M7.93 0.991C11.762 0.991 14.868 4.098 14.868 7.93C14.868 11.762 11.762 14.868 7.93 14.868C4.098 14.868 0.991 11.762 0.991 7.93C0.991 4.098 4.098 0.991 7.93 0.991ZM10.257 2.48C7.242 1.207 3.767 2.618 2.493 5.633C1.22 8.648 2.632 12.124 5.646 13.398C8.661 14.67 12.137 13.259 13.41 10.244C13.562 9.885 13.677 9.511 13.756 9.129C14.323 6.362 12.859 3.579 10.257 2.48ZM7.92 3.472C8.193 3.472 8.415 3.693 8.415 3.967V7.723L11.245 10.554C11.438 10.747 11.438 11.061 11.245 11.254C11.052 11.447 10.738 11.447 10.545 11.254L7.425 8.133V3.967C7.425 3.693 7.646 3.472 7.92 3.472Z" fill="white"/>
+</svg>
+''',
+            width: 16,
+            height: 16,
+          ),
+          SizedBox(width: 4),
+          Text(
+            '$minutes:$seconds',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -629,7 +1335,7 @@ class _VipBenefitsPanel extends StatelessWidget {
                 t.vip_benefits,
                 style: TextStyle(
                   color: Color(0xff633e25),
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               SizedBox(width: 12),
@@ -759,7 +1465,7 @@ class _VipExclusiveGrid extends StatelessWidget {
                   color: Colors.white,
                   fontSize: 14,
                   height: 1.16,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -806,7 +1512,7 @@ class _SubscribeButton extends StatelessWidget {
               style: TextStyle(
                 color: Color(0xff633e25),
                 fontSize: 17,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w400,
               ),
             ),
           ),
@@ -823,15 +1529,72 @@ String _userName(UserState user) {
   return user.state!.name;
 }
 
+bool get _applePayMode => Global.webPreview || (!kIsWeb && Platform.isIOS);
+
+Future<void> _trackCheckout({
+  required String storeProductId,
+  required double price,
+}) async {
+  if (Global.webPreview) {
+    Global.payTrace('web preview skip checkout tracking');
+    return;
+  }
+  AdjustTracking.trackInitiateCheckout(productId: storeProductId, amount: price);
+  try {
+    await TikTokEventsSdk.logEvent(
+      event: TikTokEvent(
+        eventName: 'checkout',
+        properties: EventProperties(
+          description: storeProductId,
+          value: price,
+          currency: CurrencyCode.USD,
+        ),
+      ),
+    );
+  } on Object catch (error) {
+    Global.logger.d('checkout tracking failed: $error');
+    Global.payTrace('checkout tracking failed $error');
+  }
+}
+
 List<dynamic> _subscriptionRows(dynamic payload) {
-  final rows = payload is Map ? payload['subscription'] : payload;
+  final fromGroupedPayload = payload is Map;
+  final rows = fromGroupedPayload ? payload['subscription'] : payload;
   final list = rows is List ? rows : <dynamic>[];
+  if (fromGroupedPayload) {
+    return list.whereType<Map>().where((item) {
+      return _storeProductId(item).isNotEmpty;
+    }).toList();
+  }
   return list.where((item) {
     if (item is! Map) {
       return false;
     }
+    if (!fromGroupedPayload &&
+        _productType(item) != 0 &&
+        _productType(item) != 1) {
+      return false;
+    }
     final plan = _planId(item);
-    return plan == 'weekly' || plan == 'yearly';
+    return plan.isNotEmpty;
+  }).toList();
+}
+
+List<dynamic> _purchaseRows(dynamic payload) {
+  final fromGroupedPayload = payload is Map;
+  final rows = fromGroupedPayload ? payload['purchase'] : payload;
+  final list = rows is List ? rows : <dynamic>[];
+  if (fromGroupedPayload) {
+    return list.whereType<Map>().where((item) {
+      return _storeProductId(item).isNotEmpty;
+    }).toList();
+  }
+  return list.whereType<Map>().where((item) {
+    if (!fromGroupedPayload && _productType(item) != 2) {
+      return false;
+    }
+    final coin = double.tryParse(_coinAmount(item)) ?? 0;
+    return coin > 0 || _productType(item) == 2;
   }).toList();
 }
 
@@ -848,7 +1611,21 @@ String _planId(dynamic item) {
   if (item is! Map) {
     return '';
   }
-  return _text(item['base_plan_id'] ?? item['basePlanId'] ?? item['name']);
+  return _text(item['product_id']).toLowerCase();
+}
+
+String _productTitle(dynamic item) {
+  if (item is! Map) {
+    return '';
+  }
+  return _text(
+    item['display_name'] ??
+        item['displayName'] ??
+        item['title'] ??
+        item['name'] ??
+        item['base_plan_id'] ??
+        item['basePlanId'],
+  );
 }
 
 String _productId(dynamic item) {
@@ -858,17 +1635,47 @@ String _productId(dynamic item) {
   return _text(item['id']);
 }
 
+String _coinAmount(dynamic item) {
+  if (item is! Map) {
+    return '';
+  }
+  return _text(item['coin'] ?? item['coins'] ?? item['amount']);
+}
+
+double _bonusValue(dynamic item) {
+  if (item is! Map) {
+    return 0;
+  }
+  return double.tryParse(_text(item['bonus'] ?? item['bouns'])) ?? 0;
+}
+
+int _bonusCoins(dynamic item) {
+  final coin = double.tryParse(_coinAmount(item)) ?? 0;
+  final bonus = _bonusValue(item);
+  if (coin <= 0 || bonus <= 0) {
+    return 0;
+  }
+  return (coin * bonus).round();
+}
+
+int _productType(dynamic item) {
+  if (item is! Map) {
+    return 0;
+  }
+  return int.tryParse(_text(item['type'] ?? item['product_type'])) ?? 0;
+}
+
 String _storeProductId(dynamic item) {
   if (item is! Map) {
     return '';
   }
   return _text(
-    item['apple_product_id'] ??
+    item['product_id'] ??
+        item['apple_product_id'] ??
         item['ios_product_id'] ??
-        item['product_id'] ??
+        item['name'] ??
         item['google_product_id'] ??
-        item['googleProductId'] ??
-        item['name'],
+        item['googleProductId'],
   );
 }
 
@@ -877,6 +1684,37 @@ String _moneyParam(String value) {
     return value;
   }
   return '\$$value';
+}
+
+String _moneyValue(String value) {
+  if (value.startsWith(r'$')) {
+    return value.substring(1);
+  }
+  return value;
+}
+
+double _moneyNumber(String value) {
+  return double.tryParse(value.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0;
+}
+
+int _discountPercent(String price, String renewalPrice) {
+  final p = _moneyNumber(price);
+  final r = _moneyNumber(renewalPrice);
+  if (p <= 0 || r <= 0 || p >= r) {
+    return 0;
+  }
+  return (100 - (p / r * 100).floor()).clamp(0, 99).toInt();
+}
+
+String _cleanNumber(dynamic value) {
+  final number = double.tryParse(_text(value));
+  if (number == null) {
+    return _text(value);
+  }
+  if (number == number.roundToDouble()) {
+    return number.toInt().toString();
+  }
+  return number.toString();
 }
 
 String _expireText(int seconds) {
@@ -924,28 +1762,15 @@ String _text(dynamic value) {
 
 String _rechargeTips() {
   final appName = AppConfig.current.brandDisplayName;
-  if (LocaleSettings.currentLocale == AppLocale.zhHant) {
-    return [
-      '儲值說明',
-      '1. $appName 提供免費與付費內容',
-      '2. 付費內容可使用金幣與獎勵金幣解鎖，或購買會員後觀看',
-      '3. 訂閱期間內，你可以不受限制地觀看 App 內所有內容',
-      '4. 訂閱成功完成後，訂閱福利將依你的訂單狀態於 24 小時內生效。',
-      '5. 目前訂閱期間結束前 24 小時內，系統會依所選方案價格從你的帳戶扣除續訂費用。續訂付款成功處理後，你的訂閱期間將自動延長。',
-      '6. 如需取消續訂，請至少在目前訂閱期間結束前 24 小時前往 App Store 取消訂閱。',
-      '7. 如果你已成功儲值且款項已扣除，但餘額未變更，請點擊「還原」嘗試重新整理。',
-      '8. 如有其他問題，請透過意見回饋聯絡我們。繼續即表示你同意我們的會員協議、付款協議與隱私權政策',
-    ].join('\n\n');
-  }
-  return [
-    'Recharge Instructions',
-    '1. $appName offers both free and paid content',
-    '2. Paid content can be unlocked using coins and reward coins, or by purchasing a membership to watch',
-    '3. During the subscription period, you can watch all content in the app without restrictions',
-    '4. Subscription benefits will take effect within 24 hours after the subscription is successfully completed, depending on the status of your order.',
-    '5. Within 24 hours before the current subscription period ends, the system will deduct the renewal fee from your account based on the price of the selected plan. After the renewal payment is successfully processed, your subscription period will be automatically extended.',
-    '6. If you need to cancel the renewal, please go to App Store to cancel the subscription at least 24 hours before the current subscription period ends.',
-    '7. If you have successfully recharged and the payment has been deducted, but the balance has not changed, please click "Restore" to try refreshing.',
-    '8. For other issues, please contact us through feedback. Continuing means you agree to our Membership Agreement, Payment Agreement and Privacy Policy',
-  ].join('\n\n');
+  return t.recharge_tips
+      .map((line) {
+        if (line is String) {
+          return line;
+        }
+        if (line is String Function({required Object s})) {
+          return line(s: appName);
+        }
+        return line.toString();
+      })
+      .join('\n\n');
 }

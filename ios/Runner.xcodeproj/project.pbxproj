@@ -207,6 +207,7 @@
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
 				813B56D72620D73D428511ED /* [CP] Embed Pods Frameworks */,
+				B7C6D5E4A3F2019081726354 /* Generate AdjustSigSdk dSYM */,
 				1AB6302DA3FD2B2B0346B5E3 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
@@ -344,6 +345,23 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
+		};
+		B7C6D5E4A3F2019081726354 /* Generate AdjustSigSdk dSYM */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${PODS_ROOT}/AdjustSignature/AdjustSigSdk.xcframework/ios-arm64/AdjustSigSdk.framework/AdjustSigSdk",
+			);
+			name = "Generate AdjustSigSdk dSYM";
+			outputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/AdjustSigSdk.framework.dSYM",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "ADJUST_SIG_BINARY=\"${PODS_ROOT}/AdjustSignature/AdjustSigSdk.xcframework/ios-arm64/AdjustSigSdk.framework/AdjustSigSdk\"\nADJUST_SIG_DSYM=\"${DWARF_DSYM_FOLDER_PATH}/AdjustSigSdk.framework.dSYM\"\n\nif [ \"${PLATFORM_NAME}\" = \"iphoneos\" ] && [ -f \"${ADJUST_SIG_BINARY}\" ] && [ -n \"${DWARF_DSYM_FOLDER_PATH}\" ]; then\n  echo \"Generating dSYM for AdjustSigSdk.framework\"\n  mkdir -p \"${DWARF_DSYM_FOLDER_PATH}\"\n  dsymutil \"${ADJUST_SIG_BINARY}\" -o \"${ADJUST_SIG_DSYM}\"\nfi\n";
 		};
 		B0BB43135110BB199F451D3C /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -502,7 +520,7 @@
 				DEVELOPMENT_TEAM = STXC8U7UJR;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = YogoShort;
+				INFOPLIST_KEY_CFBundleDisplayName = "YogoShort-dev1";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -689,7 +707,7 @@
 				DEVELOPMENT_TEAM = STXC8U7UJR;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = YogoShort;
+				INFOPLIST_KEY_CFBundleDisplayName = "YogoShort-dev1";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -716,7 +734,7 @@
 				DEVELOPMENT_TEAM = STXC8U7UJR;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = YogoShort;
+				INFOPLIST_KEY_CFBundleDisplayName = "YogoShort-dev1";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				LD_RUNPATH_SEARCH_PATHS = (

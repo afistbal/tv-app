@@ -9,6 +9,6 @@ class Play extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return NativeVideoFeed.episode(movieId: id, watchTo: watchTo);
+    return EpisodeVideoPage(movieId: id, watchTo: watchTo);
   }
 }

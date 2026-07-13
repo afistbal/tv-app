@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:go_router/go_router.dart';
 import 'package:yogotv/api.dart';
-import 'package:yogotv/components/ok.dart';
+import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
-import 'package:yogotv/main.dart';
 
 class Help extends StatefulWidget {
   const Help({super.key});
@@ -19,20 +17,10 @@ class Help extends StatefulWidget {
 class _Help extends State<Help> {
   String _content = '';
   String _email = '';
-  bool _submitted = false;
 
   _onSubmit() async {
-    if (_content.length < 5) {
-      Global.warning(t.feedback_content_invalid);
-      return;
-    }
-    if (_content.length < 5) {
-      Global.warning(t.feedback_content_invalid);
-      return;
-    }
-
-    if (!_email.isValidEmail) {
-      Global.warning(t.invalid_email);
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (_content.isEmpty || _email.isEmpty) {
       return;
     }
 
@@ -45,63 +33,158 @@ class _Help extends State<Help> {
     );
 
     close();
-
-    setState(() {
-      _submitted = true;
-    });
+    if (!mounted) {
+      return;
+    }
+    Global.success(t.success);
+    context.pop();
   }
 
   @override
   Widget build(BuildContext context) {
+    final canSubmit = _content.isNotEmpty && _email.isNotEmpty;
     return Scaffold(
-      appBar: AppBar(title: Text(t.feedback_help)),
-      body: _submitted
-          ? Ok(message: t.feedback_submitted)
-          : SingleChildScrollView(
-              child: Padding(
-                padding: EdgeInsets.all(16),
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            AndroidToolbar(title: t.feedback_help, onBack: context.pop),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 15),
                 child: Column(
-                  spacing: 16,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TextField(
-                      onTapOutside: (_) {
-                        FocusManager.instance.primaryFocus?.unfocus();
-                      },
-                      onChanged: (value) {
-                        _content = value.trim();
-                      },
-                      maxLines: 8,
-                      decoration: InputDecoration(
-                        hintText: t.feedback_placeholder,
+                    SizedBox(
+                      height: 160,
+                      child: TextField(
+                        onTapOutside: (_) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                        },
+                        onChanged: (value) {
+                          setState(() => _content = value.trim());
+                        },
+                        maxLines: null,
+                        expands: true,
+                        textAlignVertical: TextAlignVertical.top,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.2,
+                        ),
+                        decoration: _androidInputDecoration(
+                          hint: t.feedback_input_hint,
+                          contentPadding: const EdgeInsets.all(12),
+                        ),
                       ),
                     ),
-                    TextField(
-                      onTapOutside: (_) {
-                        FocusManager.instance.primaryFocus?.unfocus();
-                      },
-                      onChanged: (value) {
-                        _email = value.trim();
-                      },
-                      decoration: InputDecoration(
-                        hintText: t.email_placeholder,
-                        prefixIcon: Icon(LucideIcons.mail),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Text(
+                          t.star_mark,
+                          style: const TextStyle(
+                            color: Color(0xffff3d5d),
+                            fontSize: 14,
+                            height: 1.2,
+                          ),
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          t.email,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 44,
+                      child: TextField(
+                        onTapOutside: (_) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                        },
+                        onChanged: (value) {
+                          setState(() => _email = value.trim());
+                        },
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.done,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.2,
+                        ),
+                        decoration: _androidInputDecoration(
+                          hint: t.enter_your_email,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                          ),
+                        ),
                       ),
                     ),
-                    FilledButton(
-                      onPressed: _onSubmit,
-                      child: Row(
-                        spacing: 4,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(TablerIcons.send, size: 20),
-                          Text(t.submit, style: TextStyle(fontSize: 16)),
-                        ],
+                    const SizedBox(height: 16),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: canSubmit ? _onSubmit : null,
+                      child: Container(
+                        height: 44,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: canSubmit
+                              ? const Color(0xffff3d5d)
+                              : const Color(0xff999999),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          t.submit,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            height: 1.2,
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
             ),
+          ],
+        ),
+      ),
     );
   }
+}
+
+InputDecoration _androidInputDecoration({
+  required String hint,
+  required EdgeInsetsGeometry contentPadding,
+}) {
+  return InputDecoration(
+    hintText: hint,
+    hintStyle: const TextStyle(
+      color: Color(0xff999999),
+      fontSize: 14,
+      height: 1.2,
+    ),
+    filled: true,
+    fillColor: const Color(0xff212121),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    contentPadding: contentPadding,
+  );
 }

@@ -58,7 +58,11 @@ class _About extends State<About> {
                 children: [
                   ListTile(
                     onTap: () {
-                      launchUrl(Uri.parse('https://ddkk.hk/user-terms.html'));
+                      launchUrl(
+                        Uri.parse(
+                          'https://yogoshort.com/page/text?title=terms_of_service',
+                        ),
+                      );
                     },
                     contentPadding: EdgeInsets.symmetric(
                       vertical: 4,
@@ -71,7 +75,9 @@ class _About extends State<About> {
                   ListTile(
                     onTap: () {
                       launchUrl(
-                        Uri.parse('https://ddkk.hk/privacy-policy.html'),
+                        Uri.parse(
+                          'https://yogoshort.com/page/text?title=privacy_policy',
+                        ),
                       );
                     },
                     contentPadding: EdgeInsets.symmetric(

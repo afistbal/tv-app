@@ -1,20 +1,19 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/svg.dart';
-import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
-import 'package:yogotv/app_config.dart';
-import 'package:yogotv/components/modal_bottom.dart';
+import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/main.dart';
+import 'package:yogotv/pages/policy_webview.dart';
 import 'package:yogotv/states/user.dart';
 
 class Login extends StatefulWidget {
@@ -27,6 +26,9 @@ class Login extends StatefulWidget {
 }
 
 class _Login extends State<Login> {
+  static const String _googleWebClientId =
+      '1060307128443-qf4266aj8kfscpf3nv9g8lvkseiip75v.apps.googleusercontent.com';
+
   @override
   initState() {
     super.initState();
@@ -40,64 +42,77 @@ class _Login extends State<Login> {
   }
 
   _onGoogleSign() async {
-    if (Global.webPreview) {
-      Global.info('Please test login in the iOS app.');
-      return;
-    }
     final cancel = Global.loading();
     try {
       // Trigger the authentication flow
       final GoogleSignInAccount? googleUser = await GoogleSignIn(
+        clientId: kIsWeb ? _googleWebClientId : null,
         scopes: ['email', 'profile'],
       ).signIn();
-
-      final GoogleSignInAuthentication? googleAuth =
-          await googleUser?.authentication;
-
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth?.accessToken,
-        idToken: googleAuth?.idToken,
-      );
-
-      if (FirebaseAuth.instance.currentUser != null &&
-          FirebaseAuth.instance.currentUser!.isAnonymous) {
-        try {
-          await FirebaseAuth.instance.currentUser?.linkWithCredential(
-            credential,
-          );
-        } on FirebaseAuthException catch (e) {
-          switch (e.code) {}
-        }
+      if (googleUser == null) {
+        return;
       }
 
-      await FirebaseAuth.instance.signInWithCredential(credential);
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+      if (googleAuth.accessToken == null && googleAuth.idToken == null) {
+        Global.error(t.login_failed);
+        return;
+      }
 
       if (mounted) {
-        await Global.login(context);
-        setState(() {});
+        final signed = await Global.loginWithGoogle(
+          context,
+          email: googleUser.email,
+          name: googleUser.displayName ?? '',
+          googleId: googleUser.id,
+          avatarUrl: googleUser.photoUrl ?? '',
+        );
+        if (signed && mounted) {
+          context.pop(true);
+        } else if (mounted) {
+          setState(() {});
+        }
       }
-    } on Exception catch (e) {
+    } catch (e) {
+      if (e.toString().contains('popup_closed')) {
+        return;
+      }
       Global.logger.d(e.toString());
+      Global.error(t.login_failed);
     } finally {
       cancel();
     }
   }
 
   _onAppleSign() async {
-    if (Global.webPreview) {
-      Global.info('Please test Apple Sign in on iOS.');
+    if (kIsWeb || Global.webPreview) {
+      Global.info('Please test Apple login in the iOS app.');
       return;
     }
     final cancel = Global.loading();
     try {
       final provider = AppleAuthProvider();
       provider.addScope('email');
+      provider.addScope('name');
 
-      await FirebaseAuth.instance.signInWithProvider(provider);
+      final credential = await FirebaseAuth.instance.signInWithProvider(
+        provider,
+      );
+      final user = credential.user;
 
       if (mounted) {
-        await Global.login(context);
-        setState(() {});
+        final signed = await Global.loginWithApple(
+          context,
+          email: user?.email ?? '',
+          name: Global.firebaseDisplayName(user),
+          appleId: user?.uid ?? '',
+        );
+        if (signed && mounted) {
+          context.pop(true);
+        } else if (mounted) {
+          setState(() {});
+        }
       }
     } on Exception catch (e) {
       Global.logger.d(e);
@@ -107,233 +122,253 @@ class _Login extends State<Login> {
   }
 
   _emailLogin() async {
-    if (Global.webPreview) {
-      Global.info('Please test login in the iOS app.');
-      return;
-    }
-    final result = await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) {
-        return _EmailLogin();
-      },
-    );
+    final result = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => _EmailLogin()));
     if (result == true) {
-      setState(() {});
-    }
-  }
-
-  _deleteAccount() async {
-    final cancel = Global.loading();
-    try {
-      await api('user/delete', method: Method.post, loading: false);
-      await FirebaseAuth.instance.currentUser?.delete();
-      await Global.sp.remove('token');
       if (mounted) {
-        Global.login(context);
+        context.pop(true);
       }
-    } on Exception catch (e) {
-      Global.logger.d(e);
-    } finally {
-      cancel();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final userState = context.read<UserState>();
     return Scaffold(
-      appBar: AppBar(
-        title: Text(userState.signed ? t.account_infomation : t.login),
-      ),
-      body: userState.signed
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Image.asset(
+              'assets/images/android/bg_login.png',
+              fit: BoxFit.fitWidth,
+            ),
+          ),
+          SafeArea(
+            bottom: false,
+            child: Column(
               children: [
-                Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Ink(
-                    decoration: BoxDecoration(
-                      color: Color(0x10ffffff),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Wrap(
+                _LoginToolbar(onBack: context.pop),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(horizontal: 15),
+                    child: Column(
                       children: [
-                        ListTile(
-                          contentPadding: EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 16,
-                          ),
-                          title: Text(
-                            t.id,
-                            style: TextStyle(color: Colors.white60),
-                          ),
-                          trailing: Text(
-                            userState.state?.uniqueId ?? '',
-                            style: TextStyle(fontSize: 16),
-                          ),
+                        SizedBox(height: 120),
+                        Image.asset(
+                          'assets/images/android/ic_logo_login.png',
+                          width: 130,
+                          fit: BoxFit.fitWidth,
                         ),
-                        Divider(height: 1),
-                        ListTile(
-                          contentPadding: EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 16,
+                        SizedBox(height: 100),
+                        if (kIsWeb ||
+                            Global.webPreview ||
+                            (!kIsWeb &&
+                                defaultTargetPlatform ==
+                                    TargetPlatform.iOS)) ...[
+                          _LoginButton(
+                            icon: 'assets/images/apple.svg',
+                            text: t.login_apple,
+                            onTap: _onAppleSign,
                           ),
-                          title: Text(
-                            t.user_name,
-                            style: TextStyle(color: Colors.white60),
-                          ),
-                          trailing: Text(
-                            userState.state?.name ?? '',
-                            style: TextStyle(fontSize: 16),
-                          ),
+                          SizedBox(height: 16),
+                        ],
+                        _LoginButton(
+                          icon: 'assets/images/android/ic_google_login.svg',
+                          text: t.log_in_with_google,
+                          onTap: _onGoogleSign,
                         ),
-                        Divider(height: 1),
-                        ListTile(
-                          contentPadding: EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 16,
-                          ),
-                          title: Text(
-                            t.user_type,
-                            style: TextStyle(color: Colors.white60),
-                          ),
-                          trailing: Text(
-                            userState.state!.vip == 0 ? t.vip_0 : t.vip_1,
-                            style: TextStyle(fontSize: 16),
-                          ),
+                        SizedBox(height: 16),
+                        _LoginButton(
+                          icon: 'assets/images/android/ic_email_login.svg',
+                          text: t.log_in_with_e_mail,
+                          onTap: _emailLogin,
                         ),
-                        Divider(height: 1),
-                        ListTile(
-                          onTap: () async {
-                            final result = await context.push(
-                              '/alert',
-                              extra: {
-                                'title': t.delete_account,
-                                'content': t.alert_delete_account,
-                              },
-                            );
-                            if (result == true) {
-                              _deleteAccount();
-                            }
-                          },
-                          contentPadding: EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 16,
-                          ),
-                          title: Text(
-                            t.delete_account,
-                            style: TextStyle(color: Colors.white60),
-                          ),
-                          trailing: Icon(Icons.arrow_forward_ios, size: 18),
-                        ),
+                        SizedBox(height: 50),
                       ],
                     ),
                   ),
                 ),
                 Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: FilledButton(
-                    onPressed: () async {
-                      final cancel = Global.loading();
-                      await Global.logout(context);
-                      setState(() {});
-                      cancel();
-                    },
-                    child: Row(
-                      spacing: 4,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(LucideIcons.logOut, size: 20),
-                        Text(t.logout, style: TextStyle(fontSize: 16)),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : Column(
-              spacing: 16,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                SizedBox(
-                  height: 192,
-                  child: Center(
-                    child: Text(
-                      AppConfig.current.brandDisplayName,
-                      style: TextStyle(fontSize: 32),
-                    ),
-                  ),
-                ),
-                if (Global.webPreview || (!kIsWeb && Platform.isIOS))
-                  Button(
-                    onTap: _onAppleSign,
-                    width: 280,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      spacing: 8,
-                      children: [
-                        SvgPicture.asset(
-                          'assets/images/apple.svg',
-                          width: 24,
-                          height: 24,
-                        ),
-                        Expanded(
-                          child: Text(
-                            t.login_apple,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 16),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                Button(
-                  onTap: _onGoogleSign,
-                  width: 280,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    spacing: 8,
-                    children: [
-                      SvgPicture.asset(
-                        'assets/images/google.svg',
-                        width: 24,
-                        height: 24,
-                      ),
-                      Expanded(
-                        child: Text(
-                          t.login_google,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 16),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Button(
-                  onTap: _emailLogin,
-                  width: 280,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    spacing: 8,
-                    children: [
-                      SvgPicture.asset(
-                        'assets/images/email.svg',
-                        width: 24,
-                        height: 24,
-                      ),
-                      Expanded(
-                        child: Text(
-                          t.login_email,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 16),
-                        ),
-                      ),
-                    ],
-                  ),
+                  padding: EdgeInsets.fromLTRB(15, 0, 15, 16),
+                  child: _AgreementText(),
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoginToolbar extends StatelessWidget {
+  const _LoginToolbar({required this.onBack});
+
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 44,
+      child: Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: Padding(
+          padding: EdgeInsetsDirectional.only(start: 15),
+          child: InkWell(
+            onTap: onBack,
+            child: SizedBox(
+              width: 24,
+              height: 24,
+              child: SvgPicture.asset(
+                'assets/images/android/ic_toolbar_back.svg',
+                width: 24,
+                height: 24,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LoginButton extends StatelessWidget {
+  const _LoginButton({
+    required this.icon,
+    required this.text,
+    required this.onTap,
+  });
+
+  final String icon;
+  final String text;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 48,
+        padding: EdgeInsets.symmetric(horizontal: 24),
+        decoration: BoxDecoration(
+          color: Color(0xff212121),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            SvgPicture.asset(icon, width: 24, height: 24),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                text,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ),
+            SizedBox(width: 36),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgreementText extends StatefulWidget {
+  @override
+  State<_AgreementText> createState() => _AgreementTextState();
+}
+
+class _AgreementTextState extends State<_AgreementText> {
+  late final TapGestureRecognizer _termsRecognizer;
+  late final TapGestureRecognizer _privacyRecognizer;
+
+  @override
+  void initState() {
+    super.initState();
+    _termsRecognizer = TapGestureRecognizer()
+      ..onTap = () => _openPolicy('service');
+    _privacyRecognizer = TapGestureRecognizer()
+      ..onTap = () => _openPolicy('privacy');
+  }
+
+  @override
+  void dispose() {
+    _termsRecognizer.dispose();
+    _privacyRecognizer.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openPolicy(String key) async {
+    final title = key == 'service' ? t.user_agreement : t.privacy_policy;
+    final fallbackTitle = key == 'service'
+        ? 'terms_of_service'
+        : 'privacy_policy';
+    var url = 'https://yogoshort.com/page/text?title=$fallbackTitle';
+    final result = await api<Map<String, dynamic>>(
+      'home/policy',
+      method: Method.post,
+      loading: false,
+    );
+    final remoteUrl = result.d?[key]?.toString() ?? '';
+    if (remoteUrl.isNotEmpty) {
+      url = remoteUrl;
+    }
+    if (!mounted) {
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PolicyWebView(title: title, url: url),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = t.login_agree.split('||');
+    final normalStyle = TextStyle(
+      color: Color(0xff999999),
+      fontSize: 12,
+      height: 1.35,
+    );
+    final linkStyle = normalStyle.copyWith(
+      color: Colors.white,
+      decoration: TextDecoration.underline,
+      decorationColor: Colors.white,
+    );
+    return Text.rich(
+      TextSpan(
+        style: normalStyle,
+        children: [
+          TextSpan(text: parts.elementAtOrNull(0) ?? ''),
+          if (parts.length > 1)
+            TextSpan(
+              text: parts[1],
+              style: linkStyle,
+              recognizer: _termsRecognizer,
+            ),
+          if (parts.length > 2) TextSpan(text: parts[2]),
+          if (parts.length > 3)
+            TextSpan(
+              text: parts[3],
+              style: linkStyle,
+              recognizer: _privacyRecognizer,
+            ),
+          if (parts.length > 4) TextSpan(text: parts.sublist(4).join('')),
+        ],
+      ),
+      textAlign: TextAlign.center,
+      strutStyle: StrutStyle(
+        fontSize: 12,
+        height: 1.35,
+        forceStrutHeight: true,
+      ),
     );
   }
 }
@@ -346,6 +381,7 @@ class _EmailLogin extends StatefulWidget {
 }
 
 class _EmailLoginState extends State<_EmailLogin> {
+  final _emailController = TextEditingController();
   final _codeNode = FocusNode();
   Timer? _timer;
   int _time = 0;
@@ -365,6 +401,7 @@ class _EmailLoginState extends State<_EmailLogin> {
     }
 
     _email = Global.sp.getString('email') ?? '';
+    _emailController.text = _email;
   }
 
   _startTimer() {
@@ -436,35 +473,39 @@ class _EmailLoginState extends State<_EmailLogin> {
       final result = await api(
         'login/email',
         method: Method.post,
-        data: {'email': _email, 'code': _code},
+        data: {'email': _email, 'code': _code, ...AdjustTracking.loginParams()},
       );
 
       if (result.c != 0) {
         return;
       }
-      final credential = EmailAuthProvider.credential(
-        email: _email,
-        password: result.d['info']['password'],
-      );
-      if (result.d['is_new']) {
-        await FirebaseAuth.instance.currentUser?.linkWithCredential(credential);
-      } else {
-        await FirebaseAuth.instance.signInWithCredential(credential);
+      if (!kIsWeb && !Global.webPreview) {
+        final credential = EmailAuthProvider.credential(
+          email: _email,
+          password: result.d['info']['password'],
+        );
+        if (result.d['is_new']) {
+          await FirebaseAuth.instance.currentUser?.linkWithCredential(
+            credential,
+          );
+        } else {
+          await FirebaseAuth.instance.signInWithCredential(credential);
+        }
       }
 
-      if (mounted) {
-        context.read<UserState>().set(
-          UserStateValue(
-            name: result.d['info']['name'] ?? 'No Name',
-            uniqueId: result.d['info']['unique_id'],
-            password: result.d['info']['password'],
-            vip: result.d['info']['vip'],
-            admin: result.d['info']['admin'],
-            anonymous: result.d['info']['anonymous'],
-          ),
-        );
+      final value = await Global.cacheUserInfo(
+        result.d['info'],
+        token: result.d['token']?.toString(),
+        clearAvatar: true,
+      );
+      if (mounted && value != null) {
+        context.read<UserState>().set(value);
         context.pop(true);
       }
+      if (result.d['is_new'] == true) {
+        AdjustTracking.trackRegister();
+      }
+      AdjustTracking.trackLogin();
 
       Global.success(t.login_success);
     } on FirebaseAuthException catch (e) {
@@ -477,125 +518,274 @@ class _EmailLoginState extends State<_EmailLogin> {
   @override
   void dispose() {
     _timer?.cancel();
+    _emailController.dispose();
+    _codeNode.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return ModalBottom(
-      title: t.login_email,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(height: 8),
-          Divider(height: 1),
-          Padding(
-            padding: EdgeInsets.all(32),
-            child: Column(
-              spacing: 16,
-              children: [
-                TextField(
-                  autofocus: true,
-                  keyboardType: TextInputType.emailAddress,
-                  textInputAction: TextInputAction.next,
-                  onTapOutside: (event) {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                  },
-                  onChanged: (value) {
-                    _email = value.trim();
-                  },
-                  decoration: InputDecoration(
-                    prefixIcon: SizedBox(
-                      width: 64,
-                      child: Icon(LucideIcons.mail),
+    final canSendCode = _email.isNotEmpty && _time <= 0;
+    final canLogin = _email.isNotEmpty && _code.isNotEmpty;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            AndroidToolbar(
+              title: t.log_in_with_e_mail,
+              onBack: () => Navigator.pop(context),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(15, 30, 15, 24),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _EmailFieldTitle(
+                      icon: 'assets/images/android/ic_email_login.svg',
+                      text: t.email_address,
                     ),
-                    hintText: t.email_placeholder,
-                  ),
-                ),
-                TextField(
-                  focusNode: _codeNode,
-                  keyboardType: TextInputType.numberWithOptions(),
-                  textInputAction: TextInputAction.go,
-                  onTapOutside: (event) {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                  },
-                  onChanged: (value) {
-                    _code = value.trim();
-                  },
-                  onSubmitted: (_) {
-                    _submit();
-                  },
-                  decoration: InputDecoration(
-                    prefixIcon: SizedBox(
-                      width: 64,
-                      child: Icon(LucideIcons.shield),
-                    ),
-                    contentPadding: EdgeInsets.zero,
-                    suffixIcon: InkWell(
-                      borderRadius: BorderRadius.only(
-                        topRight: Radius.circular(8),
-                        bottomRight: Radius.circular(8),
-                      ),
-                      onTap: _sendCode,
-                      child: Center(
-                        child: Text(
-                          _time > 0
-                              ? _time.toString().padLeft(2, '0')
-                              : t.send_code,
-                          style: TextStyle(fontSize: 16, color: Colors.red),
+                    SizedBox(height: 9),
+                    SizedBox(
+                      height: 44,
+                      child: TextField(
+                        autofocus: true,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
+                        controller: _emailController,
+                        style: _emailInputTextStyle,
+                        cursorColor: Color(0xffff385c),
+                        onTapOutside: (_) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                        },
+                        onChanged: (value) {
+                          setState(() {
+                            _email = value.trim();
+                          });
+                        },
+                        decoration: _emailInputDecoration(
+                          hintText: t.enter_your_email,
                         ),
                       ),
                     ),
-                    suffixIconConstraints: BoxConstraints(
-                      maxHeight: 56,
-                      minHeight: 56,
-                      maxWidth: 72,
-                      minWidth: 72,
+                    SizedBox(height: 16),
+                    _EmailFieldTitle(
+                      icon: 'assets/images/android/ic_verify_code.svg',
+                      text: t.email_address,
                     ),
-                    hintText: t.code_placeholder,
-                  ),
+                    SizedBox(height: 9),
+                    Container(
+                      height: 44,
+                      padding: EdgeInsetsDirectional.only(start: 12, end: 6),
+                      decoration: BoxDecoration(
+                        color: Color(0xff333333),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              focusNode: _codeNode,
+                              keyboardType: TextInputType.number,
+                              textInputAction: TextInputAction.go,
+                              style: _emailInputTextStyle,
+                              cursorColor: Color(0xffff385c),
+                              onTapOutside: (_) {
+                                FocusManager.instance.primaryFocus?.unfocus();
+                              },
+                              onChanged: (value) {
+                                setState(() {
+                                  _code = value.trim();
+                                });
+                              },
+                              onSubmitted: (_) => _submit(),
+                              decoration: _emailInputDecoration(
+                                hintText: t.enter_code,
+                                contentPadding: EdgeInsets.zero,
+                                filled: false,
+                              ),
+                            ),
+                          ),
+                          SizedBox(width: 8),
+                          _AndroidSmallButton(
+                            text: _time > 0
+                                ? _time.toString().padLeft(2, '0')
+                                : t.get_code,
+                            enabled: canSendCode,
+                            onTap: _sendCode,
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 24),
+                    _AndroidFullButton(
+                      text: t.login,
+                      enabled: canLogin,
+                      onTap: _submit,
+                    ),
+                  ],
                 ),
-                FilledButton(
-                  onPressed: _submit,
-                  child: Row(
-                    spacing: 4,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(TablerIcons.login, size: 20),
-                      Text(t.login, style: TextStyle(fontSize: 16)),
-                    ],
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+            Padding(
+              padding: EdgeInsets.fromLTRB(15, 0, 15, 16),
+              child: _AgreementText(),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class Button extends StatelessWidget {
-  final Widget child;
-  final double? width;
-  final void Function()? onTap;
+class _EmailFieldTitle extends StatelessWidget {
+  const _EmailFieldTitle({required this.icon, required this.text});
 
-  const Button({super.key, required this.child, this.width, this.onTap});
+  final String icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SvgPicture.asset(icon, width: 20, height: 20),
+        SizedBox(width: 8),
+        Text(
+          text,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            height: 1.2,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AndroidSmallButton extends StatelessWidget {
+  const _AndroidSmallButton({
+    required this.text,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String text;
+  final bool enabled;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Ink(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 80,
+        height: 32,
+        alignment: Alignment.center,
         decoration: BoxDecoration(
-          border: Border.all(color: Colors.white24),
-          borderRadius: BorderRadius.circular(16),
+          color: enabled ? Color(0xffff3d5d) : Color(0xff999999),
+          borderRadius: BorderRadius.circular(8),
         ),
-        width: width,
-        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 16),
-        child: child,
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            height: 1.2,
+          ),
+        ),
       ),
     );
   }
+}
+
+class _AndroidFullButton extends StatelessWidget {
+  const _AndroidFullButton({
+    required this.text,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String text;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 44,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: enabled ? Color(0xffff3d5d) : Color(0xff999999),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            height: 1.2,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+const _emailInputTextStyle = TextStyle(
+  color: Colors.white,
+  fontSize: 14,
+  fontWeight: FontWeight.w400,
+  height: 1.2,
+);
+
+const _emailHintTextStyle = TextStyle(
+  color: Color(0xff888888),
+  fontSize: 14,
+  fontWeight: FontWeight.w400,
+  height: 1.2,
+);
+
+InputDecoration _emailInputDecoration({
+  required String hintText,
+  EdgeInsetsGeometry contentPadding = const EdgeInsets.symmetric(
+    horizontal: 12,
+    vertical: 13,
+  ),
+  bool filled = true,
+}) {
+  return InputDecoration(
+    filled: filled,
+    fillColor: Color(0xff333333),
+    hintText: hintText,
+    hintStyle: _emailHintTextStyle,
+    contentPadding: contentPadding,
+    constraints: BoxConstraints.tightFor(height: 44),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+  );
 }

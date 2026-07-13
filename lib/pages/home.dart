@@ -1,8 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
-import 'package:yogotv/app_config.dart';
 import 'package:yogotv/components/empty.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
@@ -42,67 +44,183 @@ class _Home extends State<Home>
   Widget build(BuildContext context) {
     super.build(context);
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            _HomeToolbar(),
-            SizedBox(height: 8),
-            SizedBox(
-              height: 40,
-              child: TabBar(
-                controller: _tabController,
-                isScrollable: true,
-                tabAlignment: TabAlignment.start,
-                dividerColor: Colors.transparent,
-                indicatorSize: TabBarIndicatorSize.label,
-                indicatorColor: Colors.white,
-                indicatorWeight: 2,
-                labelColor: Colors.white,
-                unselectedLabelColor: Colors.white.withAlpha(204),
-                labelStyle: TextStyle(
-                  fontSize: 16,
-                  height: 1,
-                  fontWeight: FontWeight.w800,
-                ),
-                unselectedLabelStyle: TextStyle(
-                  fontSize: 16,
-                  height: 1,
-                  fontWeight: FontWeight.w500,
-                ),
-                labelPadding: EdgeInsets.symmetric(horizontal: 15),
-                tabs: [
-                  Tab(text: t.popular),
-                  Tab(text: t.new_string),
-                  Tab(text: t.categories),
-                ],
-              ),
-            ),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  _MovieGrid(
-                    key: PageStorageKey('home-popular'),
-                    tab: 'popular',
-                    columns: 2,
+    return ScrollConfiguration(
+      behavior: const _FastHomeScrollBehavior(),
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              _HomeToolbar(),
+              SizedBox(height: 8),
+              SizedBox(
+                height: 34,
+                child: TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  dividerColor: Colors.transparent,
+                  indicatorSize: TabBarIndicatorSize.label,
+                  indicator: const _HomeTabIndicator(),
+                  labelColor: Colors.white,
+                  unselectedLabelColor: Colors.white.withAlpha(128),
+                  labelStyle: TextStyle(
+                    fontSize: 16,
+                    height: 1,
+                    fontWeight: FontWeight.w700,
                   ),
-                  _MovieGrid(
-                    key: PageStorageKey('home-new'),
-                    tab: 'new',
-                    columns: 2,
+                  unselectedLabelStyle: TextStyle(
+                    fontSize: 16,
+                    height: 1,
+                    fontWeight: FontWeight.w400,
                   ),
-                  _CategoryMovieGrid(key: PageStorageKey('home-category')),
-                ],
+                  labelPadding: EdgeInsets.symmetric(horizontal: 15),
+                  tabs: [
+                    Tab(text: t.popular),
+                    Tab(text: t.new_string),
+                    Tab(text: t.categories),
+                  ],
+                ),
               ),
-            ),
-          ],
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
+                  physics: const _FastHomePagePhysics(),
+                  children: [
+                    _MovieGrid(
+                      key: PageStorageKey('home-popular'),
+                      tab: 'popular',
+                      columns: 2,
+                    ),
+                    _MovieGrid(
+                      key: PageStorageKey('home-new'),
+                      tab: 'new',
+                      columns: 2,
+                    ),
+                    _CategoryMovieGrid(key: PageStorageKey('home-category')),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+class _HomeTabIndicator extends Decoration {
+  const _HomeTabIndicator();
+
+  @override
+  BoxPainter createBoxPainter([VoidCallback? onChanged]) {
+    return _HomeTabIndicatorPainter();
+  }
+}
+
+class _HomeTabIndicatorPainter extends BoxPainter {
+  @override
+  void paint(Canvas canvas, Offset offset, ImageConfiguration configuration) {
+    final size = configuration.size;
+    if (size == null) {
+      return;
+    }
+    final paint = Paint()..color = const Color(0xffff3d5c);
+    final left = offset.dx + (size.width - 24) / 2;
+    final top = offset.dy + size.height - 2;
+    canvas.drawRect(Rect.fromLTWH(left, top, 24, 2), paint);
+  }
+}
+
+class _HomeLoadMore extends StatelessWidget {
+  const _HomeLoadMore();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xff999999)),
+            ),
+          ),
+          SizedBox(width: 8),
+          Text(
+            t.loading,
+            style: TextStyle(
+              color: Color(0xff999999),
+              fontSize: 14,
+              height: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FastHomeScrollBehavior extends MaterialScrollBehavior {
+  const _FastHomeScrollBehavior();
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) {
+    return const _FastHomeScrollPhysics(
+      parent: AlwaysScrollableScrollPhysics(),
+    );
+  }
+}
+
+class _FastHomeScrollPhysics extends BouncingScrollPhysics {
+  const _FastHomeScrollPhysics({super.parent});
+
+  @override
+  _FastHomeScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return _FastHomeScrollPhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  double get minFlingVelocity => 25;
+
+  @override
+  double get maxFlingVelocity => 12000;
+
+  @override
+  double carriedMomentum(double existingVelocity) {
+    return existingVelocity.sign *
+        math.min(
+          0.00105 * existingVelocity.abs() * existingVelocity.abs(),
+          60000,
+        );
+  }
+
+  @override
+  double frictionFactor(double overscrollFraction) {
+    return 0.45 * math.pow(1 - overscrollFraction, 2);
+  }
+}
+
+class _FastHomePagePhysics extends PageScrollPhysics {
+  const _FastHomePagePhysics({super.parent});
+
+  @override
+  _FastHomePagePhysics applyTo(ScrollPhysics? ancestor) {
+    return _FastHomePagePhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  double get minFlingDistance => 4;
+
+  @override
+  double get minFlingVelocity => 90;
+
+  @override
+  double get dragStartDistanceMotionThreshold => 1;
 }
 
 class _HomeToolbar extends StatelessWidget {
@@ -120,15 +238,15 @@ class _HomeToolbar extends StatelessWidget {
                 height: 36,
                 padding: EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
-                  color: Color(0xff151515),
+                  color: Color(0xff333333),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      LucideIcons.search,
-                      size: 16,
-                      color: Color(0xff999999),
+                    SvgPicture.asset(
+                      'assets/images/android/ic_search_home.svg',
+                      width: 16,
+                      height: 16,
                     ),
                     SizedBox(width: 6),
                     Expanded(
@@ -152,12 +270,14 @@ class _HomeToolbar extends StatelessWidget {
           InkWell(
             borderRadius: BorderRadius.circular(16),
             onTap: () => context.push('/membership'),
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 4),
-              child: Image.asset(
-                'assets/images/android/ic_home_vip.png',
-                height: 28,
-                fit: BoxFit.contain,
+            child: SizedBox(
+              height: 36,
+              child: Center(
+                child: Image.asset(
+                  'assets/images/android/ic_home_vip.png',
+                  height: 28,
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
           ),
@@ -324,7 +444,9 @@ class _MovieGridState extends State<_MovieGrid>
         backgroundColor: Color(0xffff3d5d),
         onRefresh: _refresh,
         child: ListView(
-          physics: AlwaysScrollableScrollPhysics(),
+          physics: const _FastHomeScrollPhysics(
+            parent: AlwaysScrollableScrollPhysics(),
+          ),
           children: [SizedBox(height: 360, child: Empty())],
         ),
       );
@@ -336,17 +458,19 @@ class _MovieGridState extends State<_MovieGrid>
       onRefresh: _refresh,
       child: CustomScrollView(
         controller: _scrollController,
-        cacheExtent: 360,
-        physics: AlwaysScrollableScrollPhysics(),
+        scrollCacheExtent: const ScrollCacheExtent.pixels(360),
+        physics: const _FastHomeScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
+        ),
         slivers: [
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
+            padding: EdgeInsets.fromLTRB(15, 8, 15, 24),
             sliver: _MovieSliverGrid(items: _items, columns: widget.columns),
           ),
           SliverToBoxAdapter(
             child: SizedBox(
-              height: 56,
-              child: _more && _items.isNotEmpty ? Loading() : null,
+              height: 40,
+              child: _more && _items.isNotEmpty ? _HomeLoadMore() : null,
             ),
           ),
         ],
@@ -517,46 +641,49 @@ class _CategoryMovieGridState extends State<_CategoryMovieGrid>
     return Column(
       children: [
         if (_tags.isNotEmpty)
-          SizedBox(
-            height: 44,
-            child: ListView.separated(
-              padding: EdgeInsets.symmetric(horizontal: 15),
-              scrollDirection: Axis.horizontal,
-              itemBuilder: (context, index) {
-                final active = index == _selectedTag;
-                return Center(
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: () => _selectTag(index),
-                    child: AnimatedContainer(
-                      duration: Duration(milliseconds: 180),
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 7,
-                      ),
-                      decoration: BoxDecoration(
-                        color: active ? Color(0xffff3d5d) : Color(0xff151515),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        _tagLabel(_tags[index]),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          height: 1,
-                          fontWeight: active
-                              ? FontWeight.w700
-                              : FontWeight.w500,
+          Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: SizedBox(
+              height: 27,
+              child: ListView.separated(
+                padding: EdgeInsets.symmetric(horizontal: 15),
+                scrollDirection: Axis.horizontal,
+                itemBuilder: (context, index) {
+                  final active = index == _selectedTag;
+                  return Center(
+                    child: InkWell(
+                      onTap: () => _selectTag(index),
+                      child: AnimatedContainer(
+                        duration: Duration(milliseconds: 180),
+                        height: 27,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: active
+                              ? Color(0xffff3d5d).withAlpha(38)
+                              : Color(0xff212121),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          _tagLabel(_tags[index]),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: active
+                                ? Color(0xffff3d5d)
+                                : Color(0xff999999),
+                            fontSize: 14,
+                            height: 1,
+                            fontWeight: FontWeight.w400,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                );
-              },
-              separatorBuilder: (context, index) => SizedBox(width: 8),
-              itemCount: _tags.length,
+                  );
+                },
+                separatorBuilder: (context, index) => SizedBox(width: 8),
+                itemCount: _tags.length,
+              ),
             ),
           ),
         Expanded(
@@ -568,7 +695,9 @@ class _CategoryMovieGridState extends State<_CategoryMovieGrid>
                   backgroundColor: Color(0xffff3d5d),
                   onRefresh: _refresh,
                   child: ListView(
-                    physics: AlwaysScrollableScrollPhysics(),
+                    physics: const _FastHomeScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
                     children: [SizedBox(height: 320, child: Empty())],
                   ),
                 )
@@ -578,17 +707,21 @@ class _CategoryMovieGridState extends State<_CategoryMovieGrid>
                   onRefresh: _refresh,
                   child: CustomScrollView(
                     controller: _scrollController,
-                    cacheExtent: 360,
-                    physics: AlwaysScrollableScrollPhysics(),
+                    scrollCacheExtent: const ScrollCacheExtent.pixels(360),
+                    physics: const _FastHomeScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
                     slivers: [
                       SliverPadding(
-                        padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
+                        padding: EdgeInsets.fromLTRB(15, 8, 15, 24),
                         sliver: _MovieSliverGrid(items: _items, columns: 3),
                       ),
                       SliverToBoxAdapter(
                         child: SizedBox(
-                          height: 56,
-                          child: _more && _items.isNotEmpty ? Loading() : null,
+                          height: 40,
+                          child: _more && _items.isNotEmpty
+                              ? _HomeLoadMore()
+                              : null,
                         ),
                       ),
                     ],
@@ -625,7 +758,7 @@ class _MovieSliverGrid extends StatelessWidget {
         crossAxisCount: columns,
         crossAxisSpacing: gap,
         mainAxisSpacing: 12,
-        childAspectRatio: columns == 2 ? 0.61 : 0.56,
+        childAspectRatio: columns == 2 ? 0.59 : 0.56,
       ),
       itemBuilder: (context, index) {
         return _MovieCard(item: visibleItems[index]);
@@ -648,7 +781,7 @@ class _MovieCard extends StatelessWidget {
     final map = item is Map ? item as Map : <String, dynamic>{};
     final imageUrl = _posterUrl(map);
     final title = _text(map['title'] ?? map['book_title'] ?? map['name']);
-    final tags = _tagLine(map);
+    final tags = _tagNames(map);
 
     return RepaintBoundary(
       child: InkWell(
@@ -659,10 +792,9 @@ class _MovieCard extends StatelessWidget {
             final width = constraints.maxWidth.isFinite
                 ? constraints.maxWidth
                 : MediaQuery.sizeOf(context).width / 2;
-            final pixelRatio = MediaQuery.devicePixelRatioOf(context).clamp(
-              1.0,
-              3.0,
-            );
+            final pixelRatio = MediaQuery.devicePixelRatioOf(
+              context,
+            ).clamp(1.0, 3.0);
             final cacheWidth = (width * pixelRatio).round();
             final cacheHeight = (width * 4 / 3 * pixelRatio).round();
 
@@ -694,13 +826,13 @@ class _MovieCard extends StatelessWidget {
                     color: Colors.white,
                     fontSize: 14,
                     height: 1.18,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
                 if (tags.isNotEmpty) ...[
-                  SizedBox(height: 4),
+                  SizedBox(height: 2),
                   Text(
-                    tags,
+                    tags.join(' , '),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -761,26 +893,29 @@ Future<void> _prefetchMovieGridTab(String tab) {
     return existing;
   }
 
-  final future = api<Map<String, dynamic>>(
-    'movie/discover',
-    method: Method.post,
-    data: {'page': 1, 'pageSize': 20, 'tab': tab},
-    loading: false,
-  ).then((result) {
-    final payload = result.d;
-    if (payload == null) {
-      return;
-    }
-    final rows = _rowsFromPayload(payload);
-    final page = _currentPage(payload, 1);
-    _discoverCache[tab] = _DiscoverCache(
-      items: List<dynamic>.of(rows),
-      page: page,
-      more: _hasMore(payload, page, rows.length),
-    );
-  }).whenComplete(() {
-    _discoverPrefetches.remove(tab);
-  });
+  final future =
+      api<Map<String, dynamic>>(
+            'movie/discover',
+            method: Method.post,
+            data: {'page': 1, 'pageSize': 20, 'tab': tab},
+            loading: false,
+          )
+          .then((result) {
+            final payload = result.d;
+            if (payload == null) {
+              return;
+            }
+            final rows = _rowsFromPayload(payload);
+            final page = _currentPage(payload, 1);
+            _discoverCache[tab] = _DiscoverCache(
+              items: List<dynamic>.of(rows),
+              page: page,
+              more: _hasMore(payload, page, rows.length),
+            );
+          })
+          .whenComplete(() {
+            _discoverPrefetches.remove(tab);
+          });
 
   _discoverPrefetches[tab] = future;
   return future;
@@ -789,19 +924,7 @@ Future<void> _prefetchMovieGridTab(String tab) {
 class _PosterPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Color(0xff151515),
-      alignment: Alignment.center,
-      child: Text(
-        AppConfig.current.brandDisplayName,
-        textAlign: TextAlign.center,
-        style: TextStyle(
-          color: Colors.white24,
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    );
+    return ColoredBox(color: Color(0xff212121));
   }
 }
 
@@ -811,7 +934,8 @@ List<dynamic> _rowsFromPayload(Map<String, dynamic> payload) {
 }
 
 int _currentPage(Map<String, dynamic> payload, int fallback) {
-  final page = payload['current_page'] ?? payload['currentPage'] ?? payload['page'];
+  final page =
+      payload['current_page'] ?? payload['currentPage'] ?? payload['page'];
   return int.tryParse(_text(page)) ?? fallback;
 }
 
@@ -869,10 +993,11 @@ String _posterPath(Map item) {
   );
 }
 
-String _tagLine(Map item) {
+List<String> _tagNames(Map item) {
   final tags = item['tags'] ?? item['tagList'] ?? item['tag_list'];
   if (tags is! List) {
-    return _text(item['tags_text'] ?? item['tag']);
+    final value = _readableTag(_text(item['tags_text'] ?? item['tag']));
+    return value.isEmpty ? const [] : [value];
   }
 
   final names = tags
@@ -880,9 +1005,9 @@ String _tagLine(Map item) {
         if (tag is Map) {
           return _readableTag(
             _text(
-              tag['local_label'] ??
-                  tag['unique_id'] ??
+              tag['unique_id'] ??
                   tag['source_tag_name'] ??
+                  tag['local_label'] ??
                   tag['matched_unique_id'] ??
                   tag['label'] ??
                   tag['title'] ??
@@ -894,7 +1019,7 @@ String _tagLine(Map item) {
       })
       .where((name) => name.isNotEmpty)
       .toList();
-  return names.join('  ');
+  return names;
 }
 
 String _tagLabel(dynamic tag) {
@@ -918,12 +1043,12 @@ String _tagId(dynamic tag) {
 
 String _readableTag(String value) {
   final trimmed = value.trim();
-  if (trimmed.isEmpty || RegExp(r'^[0-9a-fA-F]{12,}$').hasMatch(trimmed)) {
+  if (trimmed.isEmpty || RegExp(r'^[0-9a-fA-F]{6,}$').hasMatch(trimmed)) {
     return '';
   }
   return trimmed
-      .replaceAll('_', '')
-      .split(' ')
+      .replaceAll('_', ' ')
+      .split(RegExp(r'\s+'))
       .where((part) => part.trim().isNotEmpty)
       .map((part) {
         if (part.isEmpty) {

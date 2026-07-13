@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "YogoShort iOS Debug",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "00008110-000C313E1EB9401E",
+      "flutterMode": "debug"
+    },
+    {
+      "name": "YogoShort iOS Profile",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "00008110-000C313E1EB9401E",
+      "flutterMode": "profile"
+    }
+  ]
+}

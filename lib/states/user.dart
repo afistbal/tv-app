@@ -2,35 +2,41 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 class UserStateValue {
   String name;
+  String uid;
   String uniqueId;
   String password;
   int vip;
   int admin;
   int anonymous;
+  String avatarUrl;
 
   UserStateValue({
     required this.name,
+    required this.uid,
     required this.uniqueId,
     required this.password,
     required this.vip,
     required this.admin,
     required this.anonymous,
+    this.avatarUrl = '',
   });
 
   UserStateValue clone() {
     return UserStateValue(
       name: name,
+      uid: uid,
       uniqueId: uniqueId,
       password: password,
       vip: vip,
       admin: admin,
       anonymous: anonymous,
+      avatarUrl: avatarUrl,
     );
   }
 }
 
 class UserState extends Cubit<UserStateValue?> {
-  UserState() : super(null);
+  UserState([super.initialState]);
 
   get signed => state != null && state!.anonymous != 1;
   get isAdmin => (state?.admin ?? 0) > 0;

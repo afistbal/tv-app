@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart'
-    show LoadingAnimationWidget;
 
 class Splash extends StatefulWidget {
   const Splash({super.key});
@@ -21,41 +19,15 @@ class _Splash extends State<Splash> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Column(
-        spacing: 8,
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Image.asset(
-            'assets/images/android/ic_logo_login.png',
-            width: 256,
-            fit: BoxFit.contain,
-          ),
-          SizedBox(height: 120),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 64),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              spacing: 8,
-              children: [
-                // Text('100%', style: TextStyle(fontSize: 16)),
-                // LinearProgressIndicator(
-                //   borderRadius: BorderRadius.circular(4),
-                //   minHeight: 8,
-                //   value: 0.5,
-                // ),
-                LoadingAnimationWidget.discreteCircle(
-                  size: 32,
-                  color: Colors.white60,
-                ),
-                // Text(
-                //   'LOADING',
-                //   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                // ),
-              ],
-            ),
-          ),
-        ],
+      body: Center(
+        child: Image.asset(
+          'ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage.png',
+          width: 256,
+          height: 256,
+          fit: BoxFit.contain,
+          gaplessPlayback: true,
+          filterQuality: FilterQuality.high,
+        ),
       ),
     );
   }

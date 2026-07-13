@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:yogotv/api.dart';
-import 'package:yogotv/components/empty.dart';
+import 'package:yogotv/components/android_prompt_dialog.dart';
 import 'package:yogotv/components/lazy_image.dart';
-import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 
@@ -59,6 +59,7 @@ class _MyListState extends State<MyList>
   void _handleTabChange() {
     if (!_tabController.indexIsChanging) {
       _exitManageMode();
+      _currentContent?.refreshFromServer();
     }
   }
 
@@ -91,67 +92,13 @@ class _MyListState extends State<MyList>
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showAndroidPromptDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: Color(0xff151515),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          title: Text(
-            _nativeText(
-              en: 'Remove Confirmation',
-              zhHant: '移除確認',
-              ja: '削除の確認',
-              pt: 'Confirmação de remoção',
-              vi: 'Xác nhận xóa',
-              th: 'ยืนยันการลบ',
-              ko: '삭제 확인',
-              id: 'Konfirmasi Penghapusan',
-              de: 'Entfernen bestätigen',
-              ms: 'Pengesahan Padam',
-              tr: 'Kaldırma Onayı',
-              ar: 'تأكيد الإزالة',
-            ),
-            style: TextStyle(color: Colors.white, fontSize: 18),
-          ),
-          content: Text(
-            _nativeText(
-              en: 'Deletion cannot be restored. Confirm to remove from the list?',
-              zhHant: '刪除後無法恢復。確認要從清單中移除嗎？',
-              ja: '削除すると復元できません。リストから削除しますか？',
-              pt: 'A exclusão não pode ser restaurada. Confirmar remoção da lista?',
-              vi: 'Không thể khôi phục sau khi xóa. Xác nhận xóa khỏi danh sách?',
-              th: 'การลบไม่สามารถกู้คืนได้ ยืนยันการลบออกจากรายการหรือไม่?',
-              ko: '삭제 후 복원할 수 없습니다. 목록에서 삭제하시겠습니까?',
-              id: 'Penghapusan tidak dapat dipulihkan. Konfirmasi hapus dari daftar?',
-              de: 'Das Löschen kann nicht rückgängig gemacht werden. Aus der Liste entfernen?',
-              ms: 'Pemadaman tidak boleh dipulihkan. Sahkan untuk alih keluar daripada senarai?',
-              tr: 'Silme işlemi geri alınamaz. Listeden kaldırmayı onaylıyor musunuz?',
-              ar: 'لا يمكن استعادة الحذف. هل تريد التأكيد للإزالة من القائمة؟',
-            ),
-            style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: Text(
-                t.cancel,
-                style: TextStyle(color: Colors.white.withAlpha(204)),
-              ),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: Text(
-                t.confirm,
-                style: TextStyle(color: Color(0xffff3d5d)),
-              ),
-            ),
-          ],
-        );
-      },
+      title: t.remove_confirmation,
+      content: t.deletion_cannot_be_restored_confirm_to_remove_from_the_list,
     );
 
-    if (confirmed != true || !mounted) {
+    if (!confirmed || !mounted) {
       return;
     }
 
@@ -192,32 +139,34 @@ class _MyListState extends State<MyList>
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Expanded(
-                        child: TabBar(
-                          controller: _tabController,
-                          isScrollable: true,
-                          tabAlignment: TabAlignment.start,
-                          dividerColor: Colors.transparent,
-                          indicatorColor: Colors.white,
-                          indicatorWeight: 2,
-                          indicatorSize: TabBarIndicatorSize.label,
-                          labelColor: Colors.white,
-                          unselectedLabelColor: Colors.white.withAlpha(204),
-                          labelStyle: TextStyle(
-                            fontSize: 16,
-                            height: 1,
-                            fontWeight: FontWeight.w800,
+                        child: SizedBox(
+                          height: 36,
+                          child: TabBar(
+                            controller: _tabController,
+                            isScrollable: true,
+                            tabAlignment: TabAlignment.start,
+                            dividerColor: Colors.transparent,
+                            indicator: const _MyListTabIndicator(),
+                            indicatorSize: TabBarIndicatorSize.label,
+                            labelColor: Colors.white,
+                            unselectedLabelColor: Colors.white.withAlpha(128),
+                            labelStyle: TextStyle(
+                              fontSize: 16,
+                              height: 1,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            unselectedLabelStyle: TextStyle(
+                              fontSize: 16,
+                              height: 1,
+                              fontWeight: FontWeight.w400,
+                            ),
+                            labelPadding: EdgeInsets.symmetric(horizontal: 15),
+                            onTap: (_) => _exitManageMode(),
+                            tabs: [
+                              Tab(text: t.my_list),
+                              Tab(text: _watchHistoryText()),
+                            ],
                           ),
-                          unselectedLabelStyle: TextStyle(
-                            fontSize: 16,
-                            height: 1,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          labelPadding: EdgeInsets.symmetric(horizontal: 15),
-                          onTap: (_) => _exitManageMode(),
-                          tabs: [
-                            Tab(text: t.my_list),
-                            Tab(text: _watchHistoryText()),
-                          ],
                         ),
                       ),
                       AnimatedSwitcher(
@@ -234,7 +183,7 @@ class _MyListState extends State<MyList>
                                   t.done,
                                   style: TextStyle(
                                     fontSize: 14,
-                                    fontWeight: FontWeight.w800,
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
                               )
@@ -306,6 +255,29 @@ class _MyListState extends State<MyList>
   }
 }
 
+class _MyListTabIndicator extends Decoration {
+  const _MyListTabIndicator();
+
+  @override
+  BoxPainter createBoxPainter([VoidCallback? onChanged]) {
+    return _MyListTabIndicatorPainter();
+  }
+}
+
+class _MyListTabIndicatorPainter extends BoxPainter {
+  @override
+  void paint(Canvas canvas, Offset offset, ImageConfiguration configuration) {
+    final size = configuration.size;
+    if (size == null) {
+      return;
+    }
+    final paint = Paint()..color = Colors.white;
+    final left = offset.dx + (size.width - 24) / 2;
+    final top = offset.dy + size.height - 2;
+    canvas.drawRect(Rect.fromLTWH(left, top, 24, 2), paint);
+  }
+}
+
 class _MyListContent extends StatefulWidget {
   const _MyListContent({
     super.key,
@@ -331,17 +303,22 @@ class _MyListContentState extends State<_MyListContent>
   late final ScrollController _scrollController;
   final List<dynamic> _items = [];
   final Set<String> _selectedIds = {};
+  final Set<String> _hiddenIds = {};
 
   int _page = 0;
   bool _more = true;
-  bool _loading = true;
   bool _requesting = false;
   bool _managing = false;
+  int _requestGeneration = 0;
 
   @override
   bool get wantKeepAlive => true;
 
   bool get isEmpty => _items.isEmpty;
+
+  void refreshFromServer() {
+    _load(page: 1, refresh: true);
+  }
 
   @override
   void initState() {
@@ -383,24 +360,81 @@ class _MyListContentState extends State<_MyListContent>
     if (_selectedIds.isEmpty) {
       return false;
     }
-    final ids = _selectedIds.join(',');
+    final selectedIds = Set<String>.from(_selectedIds);
+    final ids = selectedIds.join(',');
+    Global.payTrace(
+      'my_list delete begin path=${widget.deletePath} selectedMovieIds=$ids itemCount=${_items.length}',
+    );
+    _requestGeneration++;
     final result = await api<dynamic>(
       widget.deletePath,
       method: Method.post,
       data: {'id': ids},
       loading: true,
     );
+    Global.payTrace(
+      'my_list delete response path=${widget.deletePath} ids=$ids c=${result.c} m=${result.m} d=${result.d}',
+    );
     if (result.c != 0 || !mounted) {
       return false;
     }
 
     setState(() {
-      _items.removeWhere((item) => _selectedIds.contains(_rowId(item)));
+      _hiddenIds.addAll(selectedIds);
+      _items.removeWhere((item) {
+        if (item is! Map) {
+          return false;
+        }
+        final localIds = {
+          _rowId(item),
+          _text(item['movie_id']),
+          _text(item['movieId']),
+          _text(item['moveId']),
+          _text(item['id']),
+        }..remove('');
+        return localIds.intersection(selectedIds).isNotEmpty;
+      });
       _selectedIds.clear();
       _managing = false;
     });
+    Global.payTrace('my_list delete local itemCount=${_items.length}');
     widget.onSelectionChanged(0);
+    _requesting = false;
+    await _reloadAfterDelete();
     return true;
+  }
+
+  Future<void> _reloadAfterDelete() async {
+    final reloadGeneration = ++_requestGeneration;
+    final result = await api<dynamic>(
+      widget.listPath,
+      method: Method.post,
+      data: {'page': 1},
+      loading: false,
+    );
+    if (!mounted || reloadGeneration != _requestGeneration) {
+      return;
+    }
+    final payload = _payloadMap(result.d);
+    final serverRows = _rowsFromPayload(payload);
+    final rows = serverRows
+        .where((item) => !_hiddenIds.contains(_rowId(item)))
+        .toList();
+    final nextPage = _currentPage(payload, 1);
+    setState(() {
+      _items
+        ..clear()
+        ..addAll(rows);
+      _page = nextPage;
+      _more =
+          result.c == 0 &&
+          payload.isNotEmpty &&
+          _hasMore(payload, nextPage, rows.length);
+      _requesting = false;
+    });
+    Global.payTrace(
+      'my_list delete reload applied c=${result.c} serverCount=${serverRows.length} visibleCount=${rows.length}',
+    );
   }
 
   Future<void> _refresh() async {
@@ -414,12 +448,10 @@ class _MyListContentState extends State<_MyListContent>
 
     setState(() {
       _requesting = true;
-      if (refresh || page == 1) {
-        _loading = true;
-      }
     });
+    final requestGeneration = ++_requestGeneration;
 
-    final result = await api<Map<String, dynamic>>(
+    final result = await api<dynamic>(
       widget.listPath,
       method: Method.post,
       data: {'page': page},
@@ -429,18 +461,23 @@ class _MyListContentState extends State<_MyListContent>
     if (!mounted) {
       return;
     }
+    if (requestGeneration != _requestGeneration) {
+      return;
+    }
 
-    if (result.c != 0 || result.d == null) {
+    final payload = _payloadMap(result.d);
+    if (result.c != 0 || payload.isEmpty) {
       setState(() {
-        _loading = false;
         _requesting = false;
         _more = false;
       });
       return;
     }
 
-    final payload = result.d!;
-    final rows = _rowsFromPayload(payload);
+    final serverRows = _rowsFromPayload(payload);
+    final rows = serverRows
+        .where((item) => !_hiddenIds.contains(_rowId(item)))
+        .toList();
     final nextPage = _currentPage(payload, page);
     final more = _hasMore(payload, nextPage, rows.length);
 
@@ -456,7 +493,6 @@ class _MyListContentState extends State<_MyListContent>
       }
       _page = nextPage;
       _more = more;
-      _loading = false;
       _requesting = false;
     });
   }
@@ -488,7 +524,8 @@ class _MyListContentState extends State<_MyListContent>
     if (item is! Map) {
       return;
     }
-    final id = item['movie_id'] ?? item['moveId'] ?? item['id'];
+    final id =
+        item['movie_id'] ?? item['movieId'] ?? item['moveId'] ?? item['id'];
     if (id == null) {
       return;
     }
@@ -506,46 +543,69 @@ class _MyListContentState extends State<_MyListContent>
           _handleVisible();
         }
       },
-      child: _loading && _items.isEmpty
-          ? Loading()
-          : RefreshIndicator(
-              color: Colors.white,
-              backgroundColor: Color(0xffff3d5d),
-              onRefresh: _refresh,
-              child: _items.isEmpty
-                  ? ListView(
-                      physics: AlwaysScrollableScrollPhysics(),
-                      children: [
-                        SizedBox(
-                          height: MediaQuery.of(context).size.height * 0.65,
-                          child: Empty(),
-                        ),
-                      ],
-                    )
-                  : ListView.builder(
-                      key: PageStorageKey(widget.storageKey),
-                      controller: _scrollController,
-                      physics: AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.only(bottom: _managing ? 78 : 16),
-                      itemExtent: 136,
-                      itemCount: _items.length + (_more ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        if (index >= _items.length) {
-                          return Loading();
-                        }
-                        final item = _items[index];
-                        final selected = _selectedIds.contains(_rowId(item));
-                        return _NativeMyListItem(
-                          item: item,
-                          managing: _managing,
-                          selected: selected,
-                          onTap: () => _managing
-                              ? _toggleSelect(item)
-                              : _openItem(context, item),
-                        );
-                      },
-                    ),
+      child: RefreshIndicator(
+        color: Colors.white,
+        backgroundColor: Color(0xffff3d5d),
+        onRefresh: _refresh,
+        child: _items.isEmpty
+            ? ListView(
+                physics: AlwaysScrollableScrollPhysics(),
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.65,
+                    child: _MyListEmpty(),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                key: PageStorageKey(widget.storageKey),
+                controller: _scrollController,
+                physics: AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.only(bottom: _managing ? 78 : 16),
+                itemExtent: 136,
+                itemCount: _items.length,
+                itemBuilder: (context, index) {
+                  final item = _items[index];
+                  final selected = _selectedIds.contains(_rowId(item));
+                  return _NativeMyListItem(
+                    item: item,
+                    managing: _managing,
+                    selected: selected,
+                    onTap: () => _managing
+                        ? _toggleSelect(item)
+                        : _openItem(context, item),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class _MyListEmpty extends StatelessWidget {
+  const _MyListEmpty();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 100,
+            height: 100,
+            child: SvgPicture.asset(
+              'assets/images/android/ic_logo_loading.svg',
+              fit: BoxFit.contain,
             ),
+          ),
+          SizedBox(height: 15),
+          Text(
+            t.theres_nothing_here,
+            style: TextStyle(color: Color(0xff999999), fontSize: 14),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -623,7 +683,7 @@ class _NativeMyListItem extends StatelessWidget {
                                 color: Colors.white,
                                 fontSize: 14,
                                 height: 1.25,
-                                fontWeight: FontWeight.w800,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                             SizedBox(height: 4),
@@ -693,7 +753,7 @@ class _DeleteButton extends StatelessWidget {
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 14,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -880,20 +940,51 @@ String _nativeText({
 
 List<dynamic> _rowsFromPayload(Map<String, dynamic> payload) {
   final data = payload['data'] ?? payload['list'] ?? payload['rows'];
+  if (data is Map) {
+    final nested = data['data'] ?? data['list'] ?? data['rows'];
+    return nested is List ? nested : <dynamic>[];
+  }
   return data is List ? data : <dynamic>[];
 }
 
+Map<String, dynamic> _payloadMap(dynamic value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  if (value is List) {
+    return {'data': value};
+  }
+  return {};
+}
+
 int _currentPage(Map<String, dynamic> payload, int fallback) {
+  final nested = payload['data'];
+  if (nested is Map) {
+    final page =
+        nested['current_page'] ?? nested['currentPage'] ?? nested['page'];
+    final parsed = int.tryParse(_text(page));
+    if (parsed != null) {
+      return parsed;
+    }
+  }
   final page =
       payload['current_page'] ?? payload['currentPage'] ?? payload['page'];
   return int.tryParse(_text(page)) ?? fallback;
 }
 
 bool _hasMore(Map<String, dynamic> payload, int page, int rowCount) {
+  final nested = payload['data'];
+  final pagePayload = nested is Map ? nested : payload;
   final perPage =
-      int.tryParse(_text(payload['per_page'] ?? payload['pageSize'])) ?? 20;
+      int.tryParse(_text(pagePayload['per_page'] ?? pagePayload['pageSize'])) ??
+      20;
   final total = int.tryParse(
-    _text(payload['count'] ?? payload['total'] ?? payload['totalCount']),
+    _text(
+      pagePayload['count'] ?? pagePayload['total'] ?? pagePayload['totalCount'],
+    ),
   );
   if (total != null && total > 0) {
     return page * perPage < total;
@@ -905,14 +996,22 @@ String _rowId(dynamic item) {
   if (item is! Map) {
     return '';
   }
-  return _text(item['id']);
+  return _text(
+    item['movie_id'] ?? item['movieId'] ?? item['moveId'] ?? item['id'],
+  );
 }
 
 String _posterUrl(dynamic item) {
   if (item is! Map) {
     return '';
   }
-  final image = _text(item['image']);
+  final image = _text(
+    item['image'] ??
+        item['cover'] ??
+        item['cover_url'] ??
+        item['coverUrl'] ??
+        item['poster'],
+  );
   if (image.isEmpty) {
     return '';
   }
@@ -923,7 +1022,7 @@ String _titleText(dynamic item) {
   if (item is! Map) {
     return t.untitled;
   }
-  final title = _text(item['title']);
+  final title = _text(item['title'] ?? item['book_title'] ?? item['name']);
   return title.isEmpty ? t.untitled : title;
 }
 
@@ -936,24 +1035,34 @@ String _tagText(dynamic item) {
     return '';
   }
 
-  return tags
-      .map((tag) {
-        if (tag is Map) {
-          final value = _text(
-            tag['unique_id'] ??
-                tag['source_tag_name'] ??
-                tag['matched_unique_id'] ??
-                tag['label'] ??
-                tag['title'] ??
-                tag['name'],
-          );
-          return _prettifyTag(value);
-        }
-        return _prettifyTag(_text(tag));
-      })
-      .where((tag) => tag.isNotEmpty)
-      .take(3)
-      .join('  ');
+  return tags.map(_tagName).where((tag) => tag.isNotEmpty).take(3).join(' , ');
+}
+
+String _tagName(dynamic tag) {
+  if (tag is Map) {
+    final candidates = [
+      tag['unique_id'],
+      tag['source_tag_name'],
+      tag['local_label'],
+      tag['matched_unique_id'],
+      tag['label'],
+      tag['title'],
+      tag['name'],
+    ];
+    for (final candidate in candidates) {
+      final value = _prettifyTag(_text(candidate));
+      if (value.isNotEmpty && !_looksLikeTagId(value)) {
+        return value;
+      }
+    }
+    return '';
+  }
+  final value = _prettifyTag(_text(tag));
+  return _looksLikeTagId(value) ? '' : value;
+}
+
+bool _looksLikeTagId(String value) {
+  return RegExp(r'^[0-9a-fA-F]{6,}$').hasMatch(value.trim());
 }
 
 String _episodeText(dynamic item) {

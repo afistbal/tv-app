@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 
 class Empty extends StatelessWidget {
@@ -11,10 +10,12 @@ class Empty extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         mainAxisAlignment: MainAxisAlignment.center,
-        spacing: 16,
         children: [
-          Icon(LucideIcons.box100, size: 96, color: Colors.white54),
-          Text(t.no_content, style: TextStyle(color: Colors.white54)),
+          Text(
+            t.no_content,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xff999999), fontSize: 14),
+          ),
         ],
       ),
     );

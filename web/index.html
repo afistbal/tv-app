@@ -29,6 +29,7 @@
 
   <title>YogoShort</title>
   <link rel="manifest" href="manifest.json">
+  <meta name="google-signin-client_id" content="1060307128443-qf4266aj8kfscpf3nv9g8lvkseiip75v.apps.googleusercontent.com">
   
   
   <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
@@ -140,6 +141,7 @@
       document.getElementById("splash-branding")?.remove();
       document.body.style.background = "transparent";
     }
+    window.addEventListener("flutter-first-frame", removeSplashFromWeb);
   </script>
 </head>
 <body>

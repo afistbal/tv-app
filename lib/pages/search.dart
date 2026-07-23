@@ -8,6 +8,7 @@ import 'package:yogotv/api.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_cover.dart';
 
 class Search extends StatefulWidget {
   const Search({super.key});
@@ -305,14 +306,8 @@ class _Search extends State<Search> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Offstage(
-                    offstage: _searched,
-                    child: _buildLanding(),
-                  ),
-                  Offstage(
-                    offstage: !_searched,
-                    child: _buildResultList(),
-                  ),
+                  Offstage(offstage: _searched, child: _buildLanding()),
+                  Offstage(offstage: !_searched, child: _buildResultList()),
                 ],
               ),
             ),
@@ -499,9 +494,7 @@ class _SearchDialogButton extends StatelessWidget {
         style: TextButton.styleFrom(
           backgroundColor: color,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
         onPressed: onPressed,
         child: Text(label, style: TextStyle(fontSize: 16)),
@@ -814,12 +807,6 @@ class _PopularGrid extends StatelessWidget {
                                             context,
                                           ).devicePixelRatio)
                                       .round(),
-                              cacheHeight:
-                                  (imageHeight *
-                                          MediaQuery.of(
-                                            context,
-                                          ).devicePixelRatio)
-                                      .round(),
                             ),
                     ),
                     SizedBox(height: 8),
@@ -873,9 +860,6 @@ class _SearchResultItem extends StatelessWidget {
                       fit: BoxFit.cover,
                       cacheWidth: (90 * MediaQuery.of(context).devicePixelRatio)
                           .round(),
-                      cacheHeight:
-                          (120 * MediaQuery.of(context).devicePixelRatio)
-                              .round(),
                     ),
             ),
             SizedBox(width: 14),
@@ -1019,13 +1003,7 @@ Map<String, dynamic> _asMap(dynamic value) {
 }
 
 String _posterUrl(Map<String, dynamic> item) {
-  final image = _text(
-    item['coverUrl'] ??
-        item['cover_url'] ??
-        item['image'] ??
-        item['image_url'] ??
-        item['cover'],
-  );
+  final image = movieCoverPath(item);
   return image.isEmpty ? '' : Global.static(image);
 }
 

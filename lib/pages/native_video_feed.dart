@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +16,7 @@ import 'package:yogotv/api.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_cover.dart';
 import 'package:yogotv/pages/membership.dart';
 import 'package:yogotv/states/user.dart';
 import 'package:yogotv/video_playback_session.dart';
@@ -87,6 +90,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   final _controllers = <int, VideoPlayerController>{};
   final _busyIndexes = <int>{};
   final _videoRequests = <String, Future<Map<String, dynamic>?>>{};
+  final _subtitleRequests = <String, Future<ClosedCaptionFile>>{};
   final _batchRequests = <String, Future<void>>{};
   final _batchNoVideoIds = <String>{};
 
@@ -209,6 +213,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         'total_episodes': episodes.length,
         'title': info['title'],
         'image': _text(ep['image']).isNotEmpty ? ep['image'] : info['image'],
+        'is_rename': info['is_rename'],
         'introduction': info['introduction'],
         'favorite': info['favorite'] ?? 0,
         'is_favor': info['is_favorite'] == 1 || info['is_favor'] == true,
@@ -218,7 +223,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         'locked': ep['locked'],
         'unlock_coins': ep['unlock_coins'] ?? ep['unlockCoins'],
         'video': _initialVideoForEpisode(ep, ep['video']),
-        'subtitle': ep['subtitle'],
+        'subtitle': ep['subtitle_url'] ?? ep['subtitle'],
         'initial_position_ms': _initialPositionForEpisode(ep),
       };
     }).toList();
@@ -383,7 +388,19 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       return;
     }
     setState(() {
-      _applyItemPatch(index, patch);
+      final isFavoritePatch =
+          patch.containsKey('is_favor') || patch.containsKey('isFavorite');
+      if (!isFavoritePatch) {
+        _applyItemPatch(index, patch);
+        return;
+      }
+
+      final movieId = _favoriteMovieId(_items[index]);
+      for (var itemIndex = 0; itemIndex < _items.length; itemIndex++) {
+        if (_favoriteMovieId(_items[itemIndex]) == movieId) {
+          _applyItemPatch(itemIndex, patch);
+        }
+      }
     });
   }
 
@@ -528,6 +545,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       }
       _controllers[index] = controller;
       VideoPlaybackSession.register(controller);
+      unawaited(_attachSubtitle(index, controller));
       if (widget.active && autoplay && index == _current) {
         await _playOnly(index);
       }
@@ -544,6 +562,43 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         setState(() {});
       }
     }
+  }
+
+  Future<void> _attachSubtitle(
+    int index,
+    VideoPlayerController controller,
+  ) async {
+    if (index < 0 || index >= _items.length) {
+      return;
+    }
+    final rawUrl = _text(
+      _items[index]['subtitle_url'] ?? _items[index]['subtitle'],
+    );
+    if (rawUrl.isEmpty) {
+      return;
+    }
+    final url = Global.static(rawUrl);
+    try {
+      final file = await _subtitleRequests.putIfAbsent(
+        url,
+        () => _loadSubtitleFile(url),
+      );
+      if (!mounted || _controllers[index] != controller) {
+        return;
+      }
+      await controller.setClosedCaptionFile(Future.value(file));
+    } catch (error) {
+      Global.logger.d('subtitle load failed url=$url error=$error');
+    }
+  }
+
+  Future<ClosedCaptionFile> _loadSubtitleFile(String url) async {
+    final response = await Global.dio.get<dynamic>(
+      url,
+      options: Options(responseType: ResponseType.plain),
+    );
+    final contents = _text(response.data).replaceFirst('\ufeff', '');
+    return WebVTTCaptionFile(contents);
   }
 
   bool _canPreparePosition(int index) {
@@ -1088,22 +1143,25 @@ class NativeVideoPage extends StatefulWidget {
 class _NativeVideoPageState extends State<NativeVideoPage> {
   Timer? _hideTimer;
   VideoPlayerController? _listeningController;
+  OverlayEntry? _lockedOverlayEntry;
 
   bool _loading = false;
   bool _uiVisible = true;
   bool _playButtonVisible = false;
   bool _centerButtonVisibleByTap = false;
+  bool _favoriteSubmitting = false;
   bool _userPaused = false;
   bool _ignoreNextSurfaceTap = false;
   bool _ended = false;
   bool _reportedWatch = false;
   bool _lockedOverlay = false;
-  bool _lockedCoverOnly = false;
+  bool _lockedOverlaySuspended = false;
   bool _handlingLockedAction = false;
   bool _autoHandledLocked = false;
   bool _showProgressText = false;
   bool _isSeeking = false;
   bool _appliedInitialPosition = false;
+  String _captionText = '';
   double _speed = 1;
   double? _dragFraction;
   int _positionSeconds = 0;
@@ -1138,27 +1196,87 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     } else if (!widget.active && oldWidget.active) {
       _pause();
     }
+    _syncLockedOverlayEntry();
   }
 
   void _resetLockedStateForNewItem() {
     _hideTimer?.cancel();
     _loading = false;
     _lockedOverlay = false;
-    _lockedCoverOnly = false;
+    _lockedOverlaySuspended = false;
     _handlingLockedAction = false;
     _autoHandledLocked = false;
     _uiVisible = false;
     _playButtonVisible = false;
     _centerButtonVisibleByTap = false;
     _userPaused = false;
+    _captionText = '';
+    _removeLockedOverlayEntry();
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
     _listeningController?.removeListener(_onVideoTick);
+    _removeLockedOverlayEntry();
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  void _syncLockedOverlayEntry() {
+    if (!mounted ||
+        !_lockedOverlay ||
+        _lockedOverlaySuspended ||
+        !widget.active) {
+      _removeLockedOverlayEntry();
+      return;
+    }
+    if (_lockedOverlayEntry != null) {
+      _lockedOverlayEntry?.markNeedsBuild();
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_lockedOverlay ||
+          _lockedOverlaySuspended ||
+          !widget.active) {
+        return;
+      }
+      final overlay = Overlay.maybeOf(context);
+      if (overlay == null || _lockedOverlayEntry != null) {
+        return;
+      }
+      final entry = OverlayEntry(
+        builder: (overlayContext) => Positioned.fill(
+          child: _LockedOverlay(
+            onBack: () {
+              if (mounted) {
+                context.pop();
+              }
+            },
+            onGetVip: _openVipPayFromOverlay,
+          ),
+        ),
+      );
+      _lockedOverlayEntry = entry;
+      overlay.insert(entry);
+    });
+  }
+
+  void _removeLockedOverlayEntry() {
+    _lockedOverlayEntry?.remove();
+    _lockedOverlayEntry?.dispose();
+    _lockedOverlayEntry = null;
+  }
+
+  void _suspendLockedOverlayEntry() {
+    _lockedOverlaySuspended = true;
+    _removeLockedOverlayEntry();
+  }
+
+  void _resumeLockedOverlayEntry() {
+    _lockedOverlaySuspended = false;
+    _syncLockedOverlayEntry();
   }
 
   void _syncController(
@@ -1174,6 +1292,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     _playButtonVisible = false;
     _centerButtonVisibleByTap = false;
     _userPaused = false;
+    _captionText = '';
     if (controller == null) {
       if (_isEpisode) {
         _uiVisible = false;
@@ -1224,14 +1343,14 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     final locked = result == PrepareResult.locked;
     setState(() {
       _loading = false;
-      _lockedOverlay = locked && !_isEpisode;
-      _lockedCoverOnly = locked && _isEpisode;
-      if (_lockedCoverOnly) {
+      _lockedOverlay = locked;
+      if (locked) {
         _uiVisible = false;
         _playButtonVisible = false;
         _centerButtonVisibleByTap = false;
       }
     });
+    _syncLockedOverlayEntry();
     if (locked && _isEpisode) {
       _scheduleInitialLockedAction();
     }
@@ -1319,8 +1438,13 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     final seconds = controller.value.position.inSeconds;
-    if (seconds != _positionSeconds && mounted) {
-      setState(() => _positionSeconds = seconds);
+    final captionText = controller.value.caption.text.trim();
+    if ((seconds != _positionSeconds || captionText != _captionText) &&
+        mounted) {
+      setState(() {
+        _positionSeconds = seconds;
+        _captionText = captionText;
+      });
     }
     if (!_reportedWatch && controller.value.isPlaying && seconds >= 5) {
       _reportedWatch = true;
@@ -1561,6 +1685,9 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   }
 
   Future<void> _toggleFavorite() async {
+    if (_favoriteSubmitting) {
+      return;
+    }
     final favor = _boolValue(
       widget.item['is_favor'] ?? widget.item['isFavorite'],
     );
@@ -1569,36 +1696,59 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     final path = favor ? 'movie/favorite/delete' : 'movie/favorite';
-    final result = await api<dynamic>(
-      path,
-      method: Method.post,
-      data: {'id': movieId},
-      loading: false,
-    );
-    if (result.c == 0) {
-      widget.onPatch({'is_favor': !favor, 'isFavorite': !favor});
-      Global.logger.d(
-        'native_video_favorite toggled movie=$movieId favorite=${!favor}',
+    final nextFavor = !favor;
+
+    setState(() => _favoriteSubmitting = true);
+    widget.onPatch({'is_favor': nextFavor, 'isFavorite': nextFavor});
+    try {
+      final result = await api<dynamic>(
+        path,
+        method: Method.post,
+        data: {'id': movieId},
+        loading: false,
       );
-      Global.sp.setBool('update_favorite', true);
-      setState(() {});
+      if (result.c == 0) {
+        Global.logger.d(
+          'native_video_favorite toggled movie=$movieId favorite=$nextFavor',
+        );
+        Global.sp.setBool('update_favorite', true);
+        return;
+      }
+
+      widget.onPatch({'is_favor': favor, 'isFavorite': favor});
+    } on Exception catch (error) {
+      Global.logger.d(
+        'native_video_favorite failed movie=$movieId error=$error',
+      );
+      widget.onPatch({'is_favor': favor, 'isFavorite': favor});
+    } finally {
+      if (mounted) {
+        setState(() => _favoriteSubmitting = false);
+      }
     }
   }
 
   Future<void> _share() async {
-    final url = _h5ShareUrl();
-    if (url.isNotEmpty) {
+    final id = widget.item['id'] ?? widget.item['movie_id'];
+    final episode = widget.item['episode'] ?? widget.item['ep_no'];
+    if (_text(id).isEmpty || _text(episode).isEmpty) {
+      return;
+    }
+
+    final result = await api<dynamic>(
+      'share/url',
+      method: Method.post,
+      data: {
+        'id': int.tryParse(_text(id)) ?? id,
+        'episode': int.tryParse(_text(episode)) ?? episode,
+      },
+      loading: true,
+    );
+    final payload = result.d;
+    final url = payload is Map ? _text(payload['url']) : '';
+    if (result.c == 0 && url.isNotEmpty) {
       await _showShareSheet(url);
     }
-  }
-
-  String _h5ShareUrl() {
-    final movieId = _text(widget.item['id']);
-    final episode = _text(widget.item['episode']);
-    if (movieId.isEmpty || episode.isEmpty) {
-      return '';
-    }
-    return 'https://yogoshort.com/share/${Uri.encodeComponent(movieId)}?v=${Uri.encodeQueryComponent(episode)}';
   }
 
   Future<void> _showShareSheet(String url) async {
@@ -1610,8 +1760,6 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       ),
       builder: (context) {
         return _ShareSheet(
-          url: url,
-          title: _title(),
           onCopy: () async {
             await Clipboard.setData(ClipboardData(text: url));
             if (context.mounted) {
@@ -1619,14 +1767,62 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
             }
             Global.success(t.success);
           },
-          onLaunch: (targetUrl, appName, [fallbackUrl]) async {
-            final launched = await _launchExternal(targetUrl);
+          onFacebook: () async {
+            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+              final installed = await canLaunchUrl(Uri.parse('fb://'));
+              if (!installed) {
+                Global.warning(_notFindText(t.facebook));
+                return;
+              }
+              if (!context.mounted) {
+                return;
+              }
+              Navigator.pop(context);
+              final launched = await _launchExternal(
+                'fb://share?link=${Uri.encodeComponent(url)}',
+              );
+              if (!launched) {
+                Global.warning(_notFindText(t.facebook));
+              }
+              return;
+            }
+            final launched = await _launchExternal(
+              'fb://share?link=${Uri.encodeComponent(url)}',
+            );
             final fallbackLaunched =
                 !launched &&
-                fallbackUrl != null &&
-                await _launchExternal(fallbackUrl);
+                await _launchExternal(
+                  'https://www.facebook.com/sharer/sharer.php?u=${Uri.encodeComponent(url)}',
+                );
             if (!launched && !fallbackLaunched) {
-              Global.warning(_notFindText(appName));
+              Global.warning(_notFindText(t.facebook));
+            }
+          },
+          onX: () async {
+            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+              final installed = await canLaunchUrl(Uri.parse('twitter://'));
+              if (!installed) {
+                Global.warning(_notFindText(t.x_app));
+                return;
+              }
+              if (!context.mounted) {
+                return;
+              }
+              Navigator.pop(context);
+              final message = '${_title()} $url'.trim();
+              final launched = await _launchExternal(
+                'twitter://post?message=${Uri.encodeComponent(message)}',
+              );
+              if (!launched) {
+                Global.warning(_notFindText(t.x_app));
+              }
+              return;
+            }
+            final launched = await _launchExternal(
+              'https://twitter.com/intent/tweet?url=${Uri.encodeComponent(url)}&text=${Uri.encodeComponent(_title())}',
+            );
+            if (!launched) {
+              Global.warning(_notFindText(t.x_app));
             }
           },
         );
@@ -1664,22 +1860,71 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   }
 
   void _showIntro() {
-    showModalBottomSheet(
+    unawaited(_openIntroSheet());
+  }
+
+  Future<void> _openIntroSheet() async {
+    final tag = await showModalBottomSheet<_VideoTagData>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) {
+      barrierColor: Colors.black,
+      builder: (sheetContext) {
         return SafeArea(
           top: false,
           child: _ShortIntroSheet(
-            title: _title(),
-            introduction: _text(widget.item['introduction']),
-            image: _posterUrl(widget.item),
-            tags: _videoTags(widget.item),
+            title: _introTitle(),
+            introduction: _introIntroduction(),
+            image: _introImage(),
+            tags: _introTags(),
+            onTag: (tag) => Navigator.of(sheetContext).pop(tag),
           ),
         );
       },
     );
+    if (tag != null && mounted) {
+      _openTag(tag);
+    }
+  }
+
+  void _openTag(_VideoTagData tag) {
+    if (tag.id.isEmpty) {
+      return;
+    }
+    context.push(
+      Uri(
+        path: '/label',
+        queryParameters: {'title': tag.name, 'tag': tag.id},
+      ).toString(),
+    );
+  }
+
+  Map<String, dynamic> _introSeriesInfo() {
+    return _asMap(widget.series?['info']);
+  }
+
+  String _introTitle() {
+    final itemTitle = _text(widget.item['title']);
+    return itemTitle.isNotEmpty
+        ? itemTitle
+        : _text(_introSeriesInfo()['title']);
+  }
+
+  String _introIntroduction() {
+    final itemIntroduction = _text(widget.item['introduction']);
+    return itemIntroduction.isNotEmpty
+        ? itemIntroduction
+        : _text(_introSeriesInfo()['introduction']);
+  }
+
+  String _introImage() {
+    final itemImage = _posterUrl(widget.item);
+    return itemImage.isNotEmpty ? itemImage : _posterUrl(_introSeriesInfo());
+  }
+
+  List<_VideoTagData> _introTags() {
+    final itemTags = _videoTags(widget.item);
+    return itemTags.isNotEmpty ? itemTags : _videoTags(_introSeriesInfo());
   }
 
   void _showEpisodes() {
@@ -1708,7 +1953,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     _handlingLockedAction = true;
-    _showLockedCoverOnly();
+    _showLockedOverlay();
     try {
       if (context.read<UserState>().isVip) {
         final episode = await _fetchEpisode(autoUnlock: false);
@@ -1820,22 +2065,22 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     final hasVideo = _text(widget.item['video']).isNotEmpty;
     if (!hasVideo && _isLockedItem(widget.item)) {
       setState(() {
-        _lockedCoverOnly = false;
         _lockedOverlay = true;
       });
+      _syncLockedOverlayEntry();
     }
   }
 
-  void _showLockedCoverOnly() {
+  void _showLockedOverlay() {
     if (!mounted || !_isEpisode || !_isLockedItem(widget.item)) {
       return;
     }
     setState(() {
-      _lockedCoverOnly = true;
-      _lockedOverlay = false;
+      _lockedOverlay = true;
       _uiVisible = false;
       _playButtonVisible = false;
     });
+    _syncLockedOverlayEntry();
   }
 
   void _clearLockedState() {
@@ -1843,10 +2088,10 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     setState(() {
-      _lockedCoverOnly = false;
       _lockedOverlay = false;
       _uiVisible = true;
     });
+    _removeLockedOverlayEntry();
   }
 
   Future<void> _showCoinUnlock(int unlockCoins) async {
@@ -1864,18 +2109,26 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     var openedTopUp = false;
-    final confirmed = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) => _CoinUnlockSheet(
-        unlockCoins: unlockCoins,
-        balanceCoins: balanceCoins,
-        onSubscribe: () {
-          openedTopUp = true;
-          Navigator.pop(sheetContext, false);
-        },
-      ),
-    );
+    _suspendLockedOverlayEntry();
+    bool? confirmed;
+    try {
+      confirmed = await showModalBottomSheet<bool>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (sheetContext) => _CoinUnlockSheet(
+          unlockCoins: unlockCoins,
+          balanceCoins: balanceCoins,
+          onSubscribe: () {
+            openedTopUp = true;
+            Navigator.pop(sheetContext, false);
+          },
+        ),
+      );
+    } finally {
+      if (mounted) {
+        _resumeLockedOverlayEntry();
+      }
+    }
     if (openedTopUp) {
       await _showTopUpAndVerify(unlockCoins);
       return;
@@ -1901,10 +2154,18 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
 
   Future<void> _showTopUpAndVerify(int unlockCoins) async {
     Global.payTrace('video open pay sheet unlockCoins=$unlockCoins');
-    final payResult = await context.push<VipPayResult>(
-      '/top-up',
-      extra: unlockCoins.toString(),
-    );
+    _suspendLockedOverlayEntry();
+    VipPayResult? payResult;
+    try {
+      payResult = await showVipPayBottomSheet(
+        context,
+        episodeCoins: unlockCoins.toString(),
+      );
+    } finally {
+      if (mounted) {
+        _resumeLockedOverlayEntry();
+      }
+    }
     if (!mounted || !widget.active) {
       return;
     }
@@ -1915,6 +2176,15 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     }
     Global.payTrace('video pay sheet result=$payResult');
     await _verifyPendingUnlockAfterTopUp(unlockCoins, payResult);
+  }
+
+  void _openVipPayFromAction() {
+    unawaited(
+      showVipPayBottomSheet(
+        context,
+        episodeCoins: _unlockCoinsFrom(widget.item).toString(),
+      ),
+    );
   }
 
   Future<void> _verifyPendingUnlockAfterTopUp(
@@ -2045,11 +2315,10 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     final controller = widget.controller;
     final videoReady = controller?.value.isInitialized == true;
     final lockedCoverOnly =
-        _lockedCoverOnly ||
-        (_isEpisode &&
-            !videoReady &&
-            !_lockedOverlay &&
-            _isLockedItem(widget.item));
+        _isEpisode &&
+        !videoReady &&
+        !_lockedOverlay &&
+        _isLockedItem(widget.item);
     final controlsVisible =
         videoReady && _uiVisible && !_isSeeking && !lockedCoverOnly;
     final centerButtonVisible =
@@ -2060,10 +2329,28 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
             : _playButtonVisible);
     final centerButtonPlaying =
         _isEpisode && !_userPaused && (controller?.value.isPlaying == true);
+    final videoSize = controller?.value.size ?? Size.zero;
+    final isLandscapeVideo = videoReady && videoSize.width > videoSize.height;
+    final lockedBackgroundImage = _introImage();
     return Stack(
       fit: StackFit.expand,
       children: [
         ColoredBox(color: Colors.black),
+        if (_lockedOverlay && !videoReady && lockedBackgroundImage.isNotEmpty)
+          Positioned.fill(
+            child: ImageFiltered(
+              imageFilter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: Transform.scale(
+                scale: 1.08,
+                child: LazyImage(
+                  url: lockedBackgroundImage,
+                  width: double.infinity,
+                  height: double.infinity,
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+          ),
         if (videoReady)
           Positioned.fill(
             bottom: _isEpisode ? 52 : 0,
@@ -2072,7 +2359,9 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
               onLongPressStart: _onLongPressStart,
               onLongPressEnd: _onLongPressEnd,
               child: FittedBox(
-                fit: BoxFit.cover,
+                // Preserve the full frame for landscape videos; portrait
+                // shorts keep the existing edge-to-edge presentation.
+                fit: isLandscapeVideo ? BoxFit.contain : BoxFit.cover,
                 child: SizedBox(
                   width: controller!.value.size.width,
                   height: controller.value.size.height,
@@ -2091,12 +2380,12 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
               onLongPressEnd: _onLongPressEnd,
             ),
           ),
+        if (videoReady && _captionText.isNotEmpty && !_lockedOverlay)
+          _VideoSubtitle(text: _captionText, bottom: _isEpisode ? 170 : 180),
         if (_loading)
           const _VideoLoading()
         else if (!videoReady && !_lockedOverlay)
           const _VideoLoading(),
-        if (_lockedOverlay)
-          _LockedOverlay(onBack: context.pop, onGetVip: _openVipPayFromOverlay),
         if (!_lockedOverlay && !lockedCoverOnly) ...[
           if (_isEpisode)
             _EpisodeTopBar(
@@ -2116,7 +2405,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
               widget.item['is_favor'] ?? widget.item['isFavorite'],
             ),
             favoriteCount: _favoriteText(widget.item['favorite']),
-            onVip: () => context.push('/top-up'),
+            onVip: _openVipPayFromAction,
             onFavorite: _toggleFavorite,
             onShare: _share,
             onPointerDown: _markChromeTap,
@@ -2130,6 +2419,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
             showWatchEpisode: _isForYou,
             showSelectEpisode: _isEpisode,
             onTitle: _showIntro,
+            onTag: _openTag,
             onWatchEpisode: () => widget.onOpenEpisodePage(
               controller?.value.position.inMilliseconds ?? 0,
             ),
@@ -2216,12 +2506,14 @@ class _ShortIntroSheet extends StatelessWidget {
     required this.introduction,
     required this.image,
     required this.tags,
+    required this.onTag,
   });
 
   final String title;
   final String introduction;
   final String image;
   final List<_VideoTagData> tags;
+  final ValueChanged<_VideoTagData> onTag;
 
   @override
   Widget build(BuildContext context) {
@@ -2254,7 +2546,6 @@ class _ShortIntroSheet extends StatelessWidget {
                           height: 145,
                           fit: BoxFit.cover,
                           cacheWidth: (110 * ratio).round(),
-                          cacheHeight: (145 * ratio).round(),
                         ),
                 ),
                 SizedBox(height: 12),
@@ -2284,7 +2575,11 @@ class _ShortIntroSheet extends StatelessWidget {
                   Wrap(
                     spacing: 4,
                     runSpacing: 4,
-                    children: tags.map((tag) => _IntroTag(tag: tag)).toList(),
+                    children: tags
+                        .map(
+                          (tag) => _IntroTag(tag: tag, onTap: () => onTag(tag)),
+                        )
+                        .toList(),
                   ),
                 ],
               ],
@@ -2313,19 +2608,15 @@ class _ShortIntroSheet extends StatelessWidget {
 }
 
 class _IntroTag extends StatelessWidget {
-  const _IntroTag({required this.tag});
+  const _IntroTag({required this.tag, required this.onTap});
 
   final _VideoTagData tag;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: tag.id.isEmpty
-          ? null
-          : () {
-              Navigator.of(context).pop();
-              context.push('/label', extra: {'title': tag.name, 'id': tag.id});
-            },
+      onTap: tag.id.isEmpty ? null : onTap,
       borderRadius: BorderRadius.circular(4),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -2364,6 +2655,47 @@ Duration _seekPreviewDuration(
   );
 }
 
+class _VideoSubtitle extends StatelessWidget {
+  const _VideoSubtitle({required this.text, required this.bottom});
+
+  final String text;
+  final double bottom;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: 24,
+      right: 24,
+      bottom: bottom,
+      child: IgnorePointer(
+        child: Align(
+          alignment: Alignment.center,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 860),
+            child: Text(
+              text,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                decoration: TextDecoration.none,
+                shadows: [
+                  Shadow(
+                    color: Colors.black,
+                    blurRadius: 4,
+                    offset: Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RightActions extends StatelessWidget {
   const _RightActions({
     required this.visible,
@@ -2389,39 +2721,46 @@ class _RightActions extends StatelessWidget {
   Widget build(BuildContext context) {
     return Positioned(
       right: 15,
-      bottom: 138,
-      child: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) => onPointerDown(),
-        child: AnimatedOpacity(
-          opacity: visible ? 1 : 0,
-          duration: Duration(milliseconds: 120),
-          child: IgnorePointer(
-            ignoring: !visible,
-            child: Column(
-              children: [
-                if (!isVip)
-                  _ActionButton(
-                    asset: 'ic_video_vip.svg',
-                    label: t.vip,
-                    color: Color(0xffffd000),
-                    onTap: onVip,
-                  ),
-                _ActionButton(
-                  asset: favorite
-                      ? 'ic_collection.svg'
-                      : 'ic_collection_nor.svg',
-                  label: favoriteCount,
-                  color: favorite ? Color(0xffffd000) : Colors.white,
-                  onTap: onFavorite,
+      top: 0,
+      bottom: 0,
+      child: Center(
+        child: Transform.translate(
+          offset: Offset(0, 20),
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => onPointerDown(),
+            child: AnimatedOpacity(
+              opacity: visible ? 1 : 0,
+              duration: Duration(milliseconds: 120),
+              child: IgnorePointer(
+                ignoring: !visible,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!isVip)
+                      _ActionButton(
+                        asset: 'ic_video_vip.svg',
+                        label: t.vip,
+                        color: Color(0xffffd000),
+                        onTap: onVip,
+                      ),
+                    _ActionButton(
+                      asset: favorite
+                          ? 'ic_collection.svg'
+                          : 'ic_collection_nor.svg',
+                      label: favoriteCount,
+                      color: favorite ? Color(0xffffd000) : Colors.white,
+                      onTap: onFavorite,
+                    ),
+                    _ActionButton(
+                      asset: 'ic_share.svg',
+                      label: t.share,
+                      color: Colors.white,
+                      onTap: onShare,
+                    ),
+                  ],
                 ),
-                _ActionButton(
-                  asset: 'ic_share.svg',
-                  label: t.share,
-                  color: Colors.white,
-                  onTap: onShare,
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -2476,17 +2815,14 @@ class _ActionButton extends StatelessWidget {
 
 class _ShareSheet extends StatelessWidget {
   const _ShareSheet({
-    required this.url,
-    required this.title,
     required this.onCopy,
-    required this.onLaunch,
+    required this.onFacebook,
+    required this.onX,
   });
 
-  final String url;
-  final String title;
   final Future<void> Function() onCopy;
-  final Future<void> Function(String url, String appName, [String? fallbackUrl])
-  onLaunch;
+  final Future<void> Function() onFacebook;
+  final Future<void> Function() onX;
 
   @override
   Widget build(BuildContext context) {
@@ -2520,20 +2856,13 @@ class _ShareSheet extends StatelessWidget {
                   _ShareTarget(
                     icon: 'ic_share_facebook.png',
                     label: t.facebook,
-                    onTap: () => onLaunch(
-                      'fb://share?link=${Uri.encodeComponent(url)}',
-                      t.facebook,
-                      'https://www.facebook.com/sharer/sharer.php?u=${Uri.encodeComponent(url)}',
-                    ),
+                    onTap: onFacebook,
                   ),
                   SizedBox(width: 30),
                   _ShareTarget(
                     icon: 'ic_share_x.png',
                     label: t.x_app,
-                    onTap: () => onLaunch(
-                      'https://twitter.com/intent/tweet?url=${Uri.encodeComponent(url)}&text=${Uri.encodeComponent(title)}',
-                      t.x_app,
-                    ),
+                    onTap: onX,
                   ),
                   SizedBox(width: 30),
                   _ShareTarget(
@@ -2603,6 +2932,7 @@ class _BottomInfo extends StatelessWidget {
     required this.showWatchEpisode,
     required this.showSelectEpisode,
     required this.onTitle,
+    required this.onTag,
     required this.onWatchEpisode,
     required this.onPointerDown,
   });
@@ -2615,6 +2945,7 @@ class _BottomInfo extends StatelessWidget {
   final bool showWatchEpisode;
   final bool showSelectEpisode;
   final VoidCallback onTitle;
+  final ValueChanged<_VideoTagData> onTag;
   final VoidCallback onWatchEpisode;
   final VoidCallback onPointerDown;
 
@@ -2686,12 +3017,7 @@ class _BottomInfo extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: tags.take(3).map((tag) {
                         return InkWell(
-                          onTap: tag.id.isEmpty
-                              ? null
-                              : () => context.push(
-                                  '/label',
-                                  extra: {'title': tag.name, 'id': tag.id},
-                                ),
+                          onTap: tag.id.isEmpty ? null : () => onTag(tag),
                           child: Container(
                             constraints: BoxConstraints(minHeight: 20),
                             margin: EdgeInsetsDirectional.only(end: 4),
@@ -3346,64 +3672,72 @@ class _LockedOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black.withAlpha(180),
-      child: Stack(
-        children: [
-          Center(
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 25),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 55),
-                    child: Text(
-                      t.unlock_get_vip_tips,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: 20),
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 25),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: onGetVip,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Color(0xffff3d5d),
-                          foregroundColor: Colors.white,
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 60,
-                            vertical: 12,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        child: Text(t.get_vip),
-                      ),
-                    ),
-                  ),
-                ],
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: IgnorePointer(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                child: ColoredBox(color: Colors.black.withAlpha(150)),
               ),
             ),
           ),
-          Positioned(
-            top: MediaQuery.of(context).padding.top,
-            left: 0,
-            child: IconButton(
-              onPressed: onBack,
-              icon: Icon(LucideIcons.chevronLeft, color: Colors.white),
+        ),
+        Center(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 25),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 55),
+                  child: Text(
+                    t.unlock_get_vip_tips,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w500,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                ),
+                SizedBox(height: 20),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 25),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onGetVip,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Color(0xffff3d5d),
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 60,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      child: Text(t.get_vip),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+        Positioned(
+          top: MediaQuery.of(context).padding.top,
+          left: 0,
+          child: IconButton(
+            onPressed: onBack,
+            icon: Icon(LucideIcons.chevronLeft, color: Colors.white),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -4015,7 +4349,7 @@ String _watchToEpisodeId(dynamic watchTo) {
 }
 
 String _posterUrl(Map<String, dynamic> item) {
-  final image = _text(item['image'] ?? item['coverUrl'] ?? item['cover_url']);
+  final image = movieCoverPath(item);
   return image.isEmpty ? '' : Global.static(image);
 }
 
@@ -4024,7 +4358,7 @@ String _favoriteText(dynamic value) {
   if (number > 0) {
     return '${number.toInt()}K';
   }
-  return '0';
+  return '1K';
 }
 
 Map<String, dynamic> _asMap(dynamic value) {

@@ -8,6 +8,7 @@ import 'package:yogotv/components/android_prompt_dialog.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_cover.dart';
 
 class MyList extends StatefulWidget {
   const MyList({super.key, required this.load});
@@ -663,7 +664,6 @@ class _NativeMyListItem extends StatelessWidget {
                                 height: 120,
                                 fit: BoxFit.cover,
                                 cacheWidth: (90 * ratio).round(),
-                                cacheHeight: (120 * ratio).round(),
                               ),
                       ),
                     ),
@@ -1002,16 +1002,7 @@ String _rowId(dynamic item) {
 }
 
 String _posterUrl(dynamic item) {
-  if (item is! Map) {
-    return '';
-  }
-  final image = _text(
-    item['image'] ??
-        item['cover'] ??
-        item['cover_url'] ??
-        item['coverUrl'] ??
-        item['poster'],
-  );
+  final image = movieCoverPath(item);
   if (image.isEmpty) {
     return '';
   }

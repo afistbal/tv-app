@@ -1,3 +1,5 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -5,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
+import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/states/main.dart';
 import 'package:yogotv/states/user.dart';
@@ -23,6 +26,7 @@ class _Profile extends State<Profile> {
   bool _isVip = false;
   String _vipExpire = '';
   String _coins = '0';
+  int _balanceRequestVersion = 0;
 
   @override
   void initState() {
@@ -40,6 +44,7 @@ class _Profile extends State<Profile> {
   }
 
   Future<void> _loadData({bool silent = false}) async {
+    final requestVersion = ++_balanceRequestVersion;
     if (!silent && mounted) {
       setState(() => _loading = true);
     }
@@ -58,7 +63,9 @@ class _Profile extends State<Profile> {
     final balance = await balanceFuture;
     final vip = await vipFuture;
 
-    if (!mounted) {
+    Global.logger.d('[COIN] profile balance c=${balance.c} value=${balance.d}');
+
+    if (!mounted || requestVersion != _balanceRequestVersion) {
       return;
     }
 
@@ -86,79 +93,92 @@ class _Profile extends State<Profile> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<UserState, UserStateValue?>(
-      builder: (context, user) {
-        return RefreshIndicator(
-          onRefresh: _loadData,
-          color: Colors.white,
-          backgroundColor: Color(0xff222222),
-          child: CustomScrollView(
-            physics: AlwaysScrollableScrollPhysics(),
-            slivers: [
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 15),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SafeArea(
-                        bottom: false,
-                        child: SizedBox(
-                          height: 34,
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: _SettingsButton(
-                              onTap: () => context.push('/settings'),
+    return BlocListener<UserState, UserStateValue?>(
+      listener: (context, user) {
+        // A deleted account is replaced with a fresh anonymous session while
+        // this page remains mounted behind the settings routes.
+        _balanceRequestVersion++;
+        setState(() {
+          _coins = '0';
+          _isVip = false;
+          _vipExpire = '';
+        });
+        _loadData(silent: true);
+      },
+      child: BlocBuilder<UserState, UserStateValue?>(
+        builder: (context, user) {
+          return RefreshIndicator(
+            onRefresh: _loadData,
+            color: Colors.white,
+            backgroundColor: Color(0xff222222),
+            child: CustomScrollView(
+              physics: AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 15),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SafeArea(
+                          bottom: false,
+                          child: SizedBox(
+                            height: 34,
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: _SettingsButton(
+                                onTap: () => context.push('/settings'),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      SizedBox(height: 18),
-                      _UserHeader(user: user),
-                      SizedBox(height: 20),
-                      _isVip
-                          ? _VipUnlockedCard(expireText: _vipExpire)
-                          : _VipLockedCard(
-                              onSubscribe: () => _openMembership(context),
-                            ),
-                      SizedBox(height: _isVip ? 16 : 16),
-                      _AccountCard(
-                        coins: _coins,
-                        loading: _loading,
-                        onDetails: () => context.push('/wallet'),
-                        onTopUp: () => _openTopUp(context),
-                      ),
-                      SizedBox(height: 12),
-                      _MineMenuItem(
-                        icon: LucideIcons.history,
-                        label: t.history,
-                        onTap: () {
-                          context.read<MainState>().setIndex(2);
-                        },
-                      ),
-                      _MineMenuItem(
-                        leading: SvgPicture.asset(
-                          'assets/images/android/ic_language_mine.svg',
-                          width: 24,
-                          height: 24,
+                        SizedBox(height: 18),
+                        _UserHeader(user: user),
+                        SizedBox(height: 20),
+                        _isVip
+                            ? _VipUnlockedCard(expireText: _vipExpire)
+                            : _VipLockedCard(
+                                onSubscribe: () => _openMembership(context),
+                              ),
+                        SizedBox(height: _isVip ? 16 : 16),
+                        _AccountCard(
+                          coins: _coins,
+                          loading: _loading,
+                          onDetails: () => context.push('/wallet'),
+                          onTopUp: () => _openTopUp(context),
                         ),
-                        label: t.language,
-                        onTap: () => context.push('/language'),
-                      ),
-                      _MineMenuItem(
-                        icon: LucideIcons.circleQuestionMark,
-                        label: t.feedback_help,
-                        onTap: () => context.push('/help'),
-                      ),
-                      SizedBox(height: 10),
-                    ],
+                        SizedBox(height: 12),
+                        _MineMenuItem(
+                          icon: LucideIcons.history,
+                          label: t.history,
+                          onTap: () {
+                            context.read<MainState>().setIndex(2);
+                          },
+                        ),
+                        _MineMenuItem(
+                          leading: SvgPicture.asset(
+                            'assets/images/android/ic_language_mine.svg',
+                            width: 24,
+                            height: 24,
+                          ),
+                          label: t.language,
+                          onTap: () => context.push('/language'),
+                        ),
+                        _MineMenuItem(
+                          icon: LucideIcons.circleQuestionMark,
+                          label: t.feedback_help,
+                          onTap: () => context.push('/help'),
+                        ),
+                        SizedBox(height: 10),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -190,8 +210,38 @@ class _UserHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isAnonymous = user == null || user!.anonymous == 1;
-    final name = isAnonymous ? t.log_in : user!.name;
+    final firebaseUser = kIsWeb ? null : FirebaseAuth.instance.currentUser;
+    final isApple =
+        user?.provider == 'apple' ||
+        firebaseUser?.providerData.any(
+              (provider) => provider.providerId == 'apple.com',
+            ) ==
+            true;
+    final firebaseName = firebaseUser?.displayName?.trim() ?? '';
+    final storedName = user?.name.trim() ?? '';
+    final name = isAnonymous
+        ? t.log_in
+        : _firstUsableProfileName([
+            firebaseName,
+            storedName,
+            isApple ? t.apple_user : '',
+            'No Name',
+          ]);
     final uid = user?.uid ?? '';
+    // Login providers return a complete avatar URL; unlike drama artwork,
+    // it must not be rewritten through the static-resource host.
+    final avatarUrl = user?.avatarUrl ?? '';
+    final avatarFallback = isAnonymous
+        ? Image.asset(
+            'assets/images/android/ic_avatar_guest.png',
+            width: 48,
+            height: 48,
+            fit: BoxFit.cover,
+          )
+        : _SignedAvatarFallback(
+            name: name,
+            provider: isApple ? 'apple' : user?.provider ?? '',
+          );
 
     return InkWell(
       onTap: isAnonymous ? () => context.push('/login') : null,
@@ -199,25 +249,15 @@ class _UserHeader extends StatelessWidget {
       child: Row(
         children: [
           ClipOval(
-            child: user?.avatarUrl.isNotEmpty == true
+            child: avatarUrl.isNotEmpty
                 ? Image.network(
-                    user!.avatarUrl,
+                    avatarUrl,
                     width: 48,
                     height: 48,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => Image.asset(
-                      'assets/images/android/ic_avatar_guest.png',
-                      width: 48,
-                      height: 48,
-                      fit: BoxFit.cover,
-                    ),
+                    errorBuilder: (_, _, _) => avatarFallback,
                   )
-                : Image.asset(
-                    'assets/images/android/ic_avatar_guest.png',
-                    width: 48,
-                    height: 48,
-                    fit: BoxFit.cover,
-                  ),
+                : avatarFallback,
           ),
           SizedBox(width: 15),
           Expanded(
@@ -267,6 +307,57 @@ class _UserHeader extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+String _firstUsableProfileName(Iterable<String> values) {
+  for (final value in values) {
+    final name = value.trim();
+    if (name.isNotEmpty &&
+        name != 'No Name' &&
+        !RegExp(r'\*{2,}').hasMatch(name)) {
+      return name;
+    }
+  }
+  return 'No Name';
+}
+
+class _SignedAvatarFallback extends StatelessWidget {
+  const _SignedAvatarFallback({required this.name, required this.provider});
+
+  final String name;
+  final String provider;
+
+  @override
+  Widget build(BuildContext context) {
+    if (provider == 'apple') {
+      return Image.asset(
+        'assets/images/android/ic_avatar_guest.png',
+        width: 48,
+        height: 48,
+        fit: BoxFit.cover,
+      );
+    }
+    final normalizedName = name.trim();
+    final initial = normalizedName.isEmpty || normalizedName == 'No Name'
+        ? ''
+        : normalizedName.characters.first.toUpperCase();
+    return Container(
+      width: 48,
+      height: 48,
+      alignment: Alignment.center,
+      color: Color(0xff343434),
+      child: initial.isNotEmpty
+          ? Text(
+              initial,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+              ),
+            )
+          : Icon(LucideIcons.userRound, color: Colors.white, size: 26),
     );
   }
 }

@@ -33,6 +33,7 @@ import 'package:yogotv/pages/search.dart';
 import 'package:yogotv/pages/play.dart';
 import 'package:yogotv/pages/help.dart';
 import 'package:yogotv/pages/settings.dart';
+import 'package:yogotv/pages/delete_account.dart';
 import 'package:yogotv/pages/wallet.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/splash.dart';
@@ -105,9 +106,10 @@ final _router = GoRouter(
       path: '/label',
       builder: (context, state) {
         final data = state.extra as Map<String, dynamic>? ?? {};
+        final query = state.uri.queryParameters;
         return LabelVideo(
-          title: data['title']?.toString() ?? '',
-          tagId: data['id']?.toString() ?? '',
+          title: query['title'] ?? data['title']?.toString() ?? '',
+          tagId: query['tag'] ?? query['id'] ?? data['id']?.toString() ?? '',
         );
       },
     ),
@@ -133,6 +135,12 @@ final _router = GoRouter(
       path: '/settings',
       builder: (context, state) {
         return Settings();
+      },
+    ),
+    GoRoute(
+      path: '/delete-account',
+      builder: (context, state) {
+        return DeleteAccount();
       },
     ),
     GoRoute(
@@ -380,6 +388,16 @@ class _Main extends State<Main> {
     }
     Global.elapsed('App initialized');
     FlutterNativeSplash.remove();
+    _restartListener = context.read<RestartState>().stream.listen((value) {
+      if (!mounted) {
+        return;
+      }
+      VideoPlaybackSession.silenceAllNow();
+      context.read<MainState>().setIndex(0);
+      while (context.canPop()) {
+        context.pop();
+      }
+    });
     if (kIsWeb || Global.webPreview) {
       setState(() {
         _loading = false;
@@ -387,30 +405,11 @@ class _Main extends State<Main> {
       return;
     }
     unawaited(_startAppServices());
-
-    _restartListener = context.read<RestartState>().stream.listen((
-      value,
-    ) async {
-      if (!mounted) {
-        return;
-      }
-      while (context.canPop()) {
-        context.pop();
-      }
-      setState(() {
-        _loading = true;
-      });
-      VideoPlaybackSession.silenceAllNow();
-      context.read<MainState>().setIndex(0);
-      await Future.delayed(Duration(seconds: 1));
-      setState(() {
-        _loading = false;
-      });
-    });
   }
 
   Future<void> _startAppServices() async {
     await Global.restoreSession(context);
+    await Purchase.init();
     if (mounted) {
       setState(() {
         _loading = false;
@@ -431,7 +430,6 @@ class _Main extends State<Main> {
       Global.logger.d('mobile ads init skipped: $error');
     }
 
-    await Purchase.init();
     api('config')
         .then((res) async {
           if (res.d['tiktok_event']['enable'] != true) {

@@ -9,6 +9,7 @@ class UserStateValue {
   int admin;
   int anonymous;
   String avatarUrl;
+  String provider;
 
   UserStateValue({
     required this.name,
@@ -19,6 +20,7 @@ class UserStateValue {
     required this.admin,
     required this.anonymous,
     this.avatarUrl = '',
+    this.provider = '',
   });
 
   UserStateValue clone() {
@@ -31,6 +33,7 @@ class UserStateValue {
       admin: admin,
       anonymous: anonymous,
       avatarUrl: avatarUrl,
+      provider: provider,
     );
   }
 }

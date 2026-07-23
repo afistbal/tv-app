@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:in_app_review/in_app_review.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/pages/policy_webview.dart';
 
 class About extends StatefulWidget {
   const About({super.key});
@@ -15,6 +15,14 @@ class About extends StatefulWidget {
 }
 
 class _About extends State<About> {
+  Future<void> _openPolicy(String title, String url) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PolicyWebView(title: title, url: url),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -57,13 +65,10 @@ class _About extends State<About> {
               child: Wrap(
                 children: [
                   ListTile(
-                    onTap: () {
-                      launchUrl(
-                        Uri.parse(
-                          'https://yogoshort.com/page/text?title=terms_of_service',
-                        ),
-                      );
-                    },
+                    onTap: () => _openPolicy(
+                      t.user_agreement,
+                      'https://yogoshort.com/page/text?title=terms_of_service',
+                    ),
                     contentPadding: EdgeInsets.symmetric(
                       vertical: 4,
                       horizontal: 16,
@@ -73,13 +78,10 @@ class _About extends State<About> {
                   ),
                   Divider(height: 1),
                   ListTile(
-                    onTap: () {
-                      launchUrl(
-                        Uri.parse(
-                          'https://yogoshort.com/page/text?title=privacy_policy',
-                        ),
-                      );
-                    },
+                    onTap: () => _openPolicy(
+                      t.privacy_policy,
+                      'https://yogoshort.com/page/text?title=privacy_policy',
+                    ),
                     contentPadding: EdgeInsets.symmetric(
                       vertical: 4,
                       horizontal: 16,

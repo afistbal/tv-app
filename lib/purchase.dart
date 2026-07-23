@@ -8,23 +8,25 @@ import 'package:yogotv/i18n/strings.g.dart';
 
 class Purchase {
   static const bool debugLogApplePayloadOnly = false;
-  static late final StreamSubscription<List<PurchaseDetails>> subscription;
+  static StreamSubscription<List<PurchaseDetails>>? _subscription;
   static dynamic result;
-  static bool canProcess = false;
   static void Function()? _loadingCallback;
   static final Map<String, Completer<bool>> _pendingPurchases = {};
   static final Map<String, Map<String, dynamic>> _pendingOrders = {};
+  static final Set<String> _attemptedBackgroundTransactions = {};
+  static Completer<bool>? _restoreCompleter;
 
-  static init() {
-    subscription = InAppPurchase.instance.purchaseStream.listen((
+  static Future<void> init() async {
+    if (_subscription != null) {
+      return;
+    }
+    _subscription = InAppPurchase.instance.purchaseStream.listen((
       purchaseDetailsList,
     ) async {
-      if (!canProcess) {
-        return;
-      }
+      var restoredAndVerified = false;
       try {
         for (var details in purchaseDetailsList) {
-          var verified = false;
+          var verification = _PurchaseVerification.retry();
           Global.logger.d(
             'iap_stream status=${details.status} product=${details.productID} purchaseID=${details.purchaseID}',
           );
@@ -40,16 +42,33 @@ class Purchase {
               Global.payTrace('Apple error ${details.error?.message ?? ''}');
             } else if (details.status == PurchaseStatus.purchased ||
                 details.status == PurchaseStatus.restored) {
+              final interactive = _pendingPurchases.containsKey(
+                details.productID,
+              );
+              final transactionKey = _transactionKey(details);
+              if (!interactive &&
+                  !_attemptedBackgroundTransactions.add(transactionKey)) {
+                Global.payTrace(
+                  'Apple background transaction already checked this session key=$transactionKey',
+                );
+                continue;
+              }
               Global.payTrace('Apple ${details.status.name}, verify backend');
               final pendingOrder = _pendingOrders[details.productID];
-              verified = await _processPurchase(
+              verification = await _processPurchase(
                 details,
                 pendingOrder: pendingOrder,
                 trackAdjust: details.status == PurchaseStatus.purchased,
+                showFailure: interactive,
               );
-              _completePending(details.productID, verified);
+              if (details.status == PurchaseStatus.restored &&
+                  verification.verified) {
+                restoredAndVerified = true;
+              }
+              _completePending(details.productID, verification.verified);
             }
-            if (verified && details.pendingCompletePurchase) {
+            if (verification.shouldComplete &&
+                details.pendingCompletePurchase) {
               Global.payTrace('Apple complete purchase');
               await InAppPurchase.instance.completePurchase(details);
             } else if (details.pendingCompletePurchase) {
@@ -64,6 +83,10 @@ class Purchase {
         if (purchaseDetailsList.isEmpty) {
           Global.warning(t.no_order);
         }
+        final restoreCompleter = _restoreCompleter;
+        if (restoreCompleter != null && !restoreCompleter.isCompleted) {
+          restoreCompleter.complete(restoredAndVerified);
+        }
         _loadingCallback?.call();
       }
     });
@@ -71,7 +94,8 @@ class Purchase {
 
   static dispose() async {
     _loadingCallback?.call();
-    await subscription.cancel();
+    await _subscription?.cancel();
+    _subscription = null;
   }
 
   static loading() {
@@ -82,10 +106,11 @@ class Purchase {
     _loadingCallback?.call();
   }
 
-  static Future<bool> _processPurchase(
+  static Future<_PurchaseVerification> _processPurchase(
     PurchaseDetails details, {
     Map<String, dynamic>? pendingOrder,
     required bool trackAdjust,
+    required bool showFailure,
   }) async {
     Global.payTrace('call applePay/verify');
     final transaction = _decodeAppleTransaction(
@@ -102,6 +127,11 @@ class Purchase {
           transactionAppAccountToken,
     );
     final transactionProductId = _text(transaction['productId']);
+    final transactionId = _firstNotEmpty([
+      transaction['transactionId'],
+      transaction['transactionID'],
+      details.purchaseID,
+    ]);
     final payload = {
       'appAccountToken': appAccountToken,
       'order_no': orderNo,
@@ -111,32 +141,34 @@ class Purchase {
           : details.productID,
       'purchaseDate': _intOrNull(transaction['purchaseDate']),
       'expiresDate': _intOrNull(transaction['expiresDate']),
+      'transactionId': transactionId,
+      'originalTransactionId': _text(
+        transaction['originalTransactionId'] ??
+            transaction['originalTransactionID'],
+      ),
+      'webOrderLineItemId': _text(transaction['webOrderLineItemId']),
+      'restore': details.status == PurchaseStatus.restored,
     };
     Global.payTrace(
       'applePay/verify resolved orderNo=${orderNo.isEmpty ? '(empty)' : orderNo} appAccountToken=${_shortText(appAccountToken)}',
     );
     if (orderNo.isEmpty) {
-      closeLoading();
-      Global.payTrace('applePay/verify skipped: missing order_no');
-      Global.payTrace('PAYMENT FAILED orderNo=unknown reason=missing_order_no');
-      Global.error(
-        'Order exception，orderNo: unknown, please contact us at the feedback center',
+      Global.payTrace(
+        'applePay/verify recovering from Apple receipt without local order',
       );
-      return false;
     }
     final authToken = Global.sp.getString('token') ?? '';
     Global.payTrace(
-      'applePay/verify Authorization=${authToken.isEmpty ? '(empty)' : 'Bearer $authToken'}',
+      'applePay/verify Authorization=${authToken.isEmpty ? '(empty)' : 'present length=${authToken.length}'}',
     );
     Global.payTrace(
       'applePay/verify request ${jsonEncode({...payload, 'serverVerificationData': _shortText(payload['serverVerificationData'])})}',
     );
     Global.payTrace('applePay/verify full request begin');
-    _printPayPayload('applePay/verify full request ${jsonEncode(payload)}');
     Global.payTrace('applePay/verify full request end');
     if (debugLogApplePayloadOnly) {
       Global.payTrace('applePay/verify skipped: debugLogApplePayloadOnly=true');
-      return true;
+      return _PurchaseVerification.verified();
     }
     final result = await api(
       'applePay/verify',
@@ -157,12 +189,17 @@ class Purchase {
       Global.payTrace(
         'PAYMENT FAILED orderNo=$orderNo verify_c=${result.c} verify_m=${result.m}',
       );
-      Global.error(
-        'Order exception，orderNo: ${orderNo.isEmpty ? 'unknown' : orderNo}, please contact us at the feedback center',
-      );
-      return false;
+      Global.payTrace('Apple transaction retained for a later verification');
+      if (showFailure) {
+        Global.error(
+          'Order exception，orderNo: ${orderNo.isEmpty ? 'unknown' : orderNo}, please contact us at the feedback center',
+        );
+      }
+      return _PurchaseVerification.retry();
     }
-    Global.payTrace('PAYMENT SUCCESS orderNo=$orderNo product=${details.productID}');
+    Global.payTrace(
+      'PAYMENT SUCCESS orderNo=$orderNo product=${details.productID}',
+    );
     await _clearCachedPendingOrder(
       productId: details.productID,
       appAccountToken: appAccountToken,
@@ -173,7 +210,7 @@ class Purchase {
         transactionId: details.purchaseID,
       );
     }
-    return result.c == 0;
+    return _PurchaseVerification.verified();
   }
 
   static Future<bool> making({
@@ -191,8 +228,8 @@ class Purchase {
     Global.logger.d(
       'IAP making localProductId=$localProductId appleProductId=$appleProductId type=$type',
     );
-    if (!await InAppPurchase.instance.isAvailable()) {
-      Global.error('Purchase Failed');
+    if (!await _waitForStoreAvailability()) {
+      Global.error(t.product_temporarily_unavailable);
       Global.logger.d('IAP unavailable');
       Global.payTrace('IAP unavailable');
       _pendingPurchases.remove(appleProductId);
@@ -257,7 +294,7 @@ class Purchase {
       );
 
       Global.payTrace('query product');
-      final response = await InAppPurchase.instance.queryProductDetails({
+      final response = await _queryProductDetailsWithRetry({
         productIdForPurchase,
       });
       Global.logger.d(
@@ -268,7 +305,7 @@ class Purchase {
       );
 
       if (response.productDetails.isEmpty) {
-        Global.error('No Product');
+        Global.error(t.product_temporarily_unavailable);
         Global.payTrace('no product');
         return false;
       }
@@ -351,8 +388,76 @@ class Purchase {
     }
   }
 
-  static Future<void> restore() async {
-    await InAppPurchase.instance.restorePurchases();
+  static Future<bool> restore() async {
+    _attemptedBackgroundTransactions.clear();
+    final completer = Completer<bool>();
+    _restoreCompleter = completer;
+    try {
+      await InAppPurchase.instance.restorePurchases();
+      return await completer.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => false,
+      );
+    } finally {
+      if (identical(_restoreCompleter, completer)) {
+        _restoreCompleter = null;
+      }
+    }
+  }
+
+  static Future<void> warmUpProductDetails(Iterable<String> productIds) async {
+    try {
+      final ids = productIds.where((id) => id.trim().isNotEmpty).toSet();
+      if (ids.isEmpty || !await _waitForStoreAvailability()) {
+        return;
+      }
+      final response = await _queryProductDetailsWithRetry(ids);
+      Global.payTrace(
+        'StoreKit warmup found=${response.productDetails.length} notFound=${response.notFoundIDs}',
+      );
+    } on Exception catch (error) {
+      Global.payTrace('StoreKit warmup failed error=$error');
+    }
+  }
+
+  static Future<bool> _waitForStoreAvailability() async {
+    for (var attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        if (await InAppPurchase.instance.isAvailable()) {
+          return true;
+        }
+      } on Exception catch (error) {
+        Global.payTrace('StoreKit availability attempt=$attempt error=$error');
+      }
+      if (attempt < 4) {
+        await Future<void>.delayed(Duration(milliseconds: 350 * attempt));
+      }
+    }
+    return false;
+  }
+
+  static Future<ProductDetailsResponse> _queryProductDetailsWithRetry(
+    Set<String> productIds,
+  ) async {
+    ProductDetailsResponse? lastResponse;
+    for (var attempt = 1; attempt <= 4; attempt += 1) {
+      final response = await InAppPurchase.instance.queryProductDetails(
+        productIds,
+      );
+      lastResponse = response;
+      final foundIds = response.productDetails.map((item) => item.id).toSet();
+      final missingIds = productIds.difference(foundIds);
+      Global.payTrace(
+        'StoreKit query attempt=$attempt ids=$productIds found=$foundIds missing=$missingIds notFound=${response.notFoundIDs} error=${response.error}',
+      );
+      if (missingIds.isEmpty) {
+        return response;
+      }
+      if (attempt < 4) {
+        await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
+      }
+    }
+    return lastResponse!;
   }
 }
 
@@ -488,14 +593,35 @@ int? _intOrNull(dynamic value) {
   return int.tryParse('$value');
 }
 
-void _printPayPayload(String value) {
-  const chunkSize = 900;
-  for (var start = 0; start < value.length; start += chunkSize) {
-    final end = (start + chunkSize) > value.length
-        ? value.length
-        : start + chunkSize;
-    // Keep the full payload visible in Xcode without relying on one very long line.
-    // ignore: avoid_print
-    print('[PAY_FULL] ${value.substring(start, end)}');
+String _transactionKey(PurchaseDetails details) {
+  return _firstNotEmpty([
+    details.purchaseID,
+    '${details.productID}:${details.transactionDate ?? ''}:${details.verificationData.serverVerificationData.hashCode}',
+  ]);
+}
+
+String _firstNotEmpty(Iterable<dynamic> values) {
+  for (final value in values) {
+    final text = _text(value).trim();
+    if (text.isNotEmpty) {
+      return text;
+    }
   }
+  return '';
+}
+
+class _PurchaseVerification {
+  const _PurchaseVerification._({
+    required this.verified,
+    required this.shouldComplete,
+  });
+
+  const _PurchaseVerification.verified()
+    : this._(verified: true, shouldComplete: true);
+
+  const _PurchaseVerification.retry()
+    : this._(verified: false, shouldComplete: false);
+
+  final bool verified;
+  final bool shouldComplete;
 }

@@ -100,12 +100,12 @@ class _Login extends State<Login> {
         provider,
       );
       final user = credential.user;
-
+      final resolvedName = Global.firebaseCredentialDisplayName(credential);
       if (mounted) {
         final signed = await Global.loginWithApple(
           context,
           email: user?.email ?? '',
-          name: Global.firebaseDisplayName(user),
+          name: resolvedName,
           appleId: user?.uid ?? '',
         );
         if (signed && mounted) {
@@ -479,39 +479,75 @@ class _EmailLoginState extends State<_EmailLogin> {
       if (result.c != 0) {
         return;
       }
-      if (!kIsWeb && !Global.webPreview) {
-        final credential = EmailAuthProvider.credential(
-          email: _email,
-          password: result.d['info']['password'],
-        );
-        if (result.d['is_new']) {
-          await FirebaseAuth.instance.currentUser?.linkWithCredential(
-            credential,
-          );
-        } else {
-          await FirebaseAuth.instance.signInWithCredential(credential);
-        }
-      }
+
+      final data = result.d is Map ? result.d as Map : const {};
+      final info = data['info'];
+      final isNew =
+          data['is_new'] == true ||
+          data['is_new'] == 1 ||
+          data['is_new']?.toString() == '1';
 
       final value = await Global.cacheUserInfo(
-        result.d['info'],
-        token: result.d['token']?.toString(),
+        info,
+        token: data['token']?.toString(),
         clearAvatar: true,
       );
-      if (mounted && value != null) {
-        context.read<UserState>().set(value);
-        context.pop(true);
+      if (value == null) {
+        Global.error(t.login_failed);
+        return;
       }
-      if (result.d['is_new'] == true) {
+
+      if (!kIsWeb && !Global.webPreview) {
+        unawaited(_syncFirebaseEmail(info, isNew: isNew));
+      }
+      if (mounted) {
+        context.read<UserState>().set(value);
+      }
+      if (isNew) {
         AdjustTracking.trackRegister();
       }
       AdjustTracking.trackLogin();
-
       Global.success(t.login_success);
-    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        context.pop(true);
+      }
+    } on Exception catch (e) {
       Global.logger.d(e);
+      Global.error(t.login_failed);
     } finally {
       close();
+    }
+  }
+
+  Future<void> _syncFirebaseEmail(dynamic info, {required bool isNew}) async {
+    final map = info is Map ? info : const {};
+    final password = map['password']?.toString() ?? '';
+    if (password.isEmpty) {
+      Global.logger.d('email firebase sync skipped: missing password');
+      return;
+    }
+    final credential = EmailAuthProvider.credential(
+      email: _email,
+      password: password,
+    );
+    try {
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (isNew && currentUser?.isAnonymous == true) {
+        try {
+          await currentUser?.linkWithCredential(credential);
+          return;
+        } on FirebaseAuthException catch (error) {
+          if (error.code != 'email-already-in-use' &&
+              error.code != 'credential-already-in-use') {
+            rethrow;
+          }
+        }
+      }
+      await FirebaseAuth.instance.signInWithCredential(credential);
+    } on FirebaseAuthException catch (error) {
+      Global.logger.d(
+        'email firebase sync failed code=${error.code} message=${error.message}',
+      );
     }
   }
 

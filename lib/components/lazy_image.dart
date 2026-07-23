@@ -29,18 +29,18 @@ class LazyImage extends StatefulWidget {
 class _LazyImage extends State<LazyImage> {
   @override
   Widget build(BuildContext context) {
-    if (widget.url.trim().isEmpty) {
+    final url = Global.static(widget.url);
+    if (url.isEmpty) {
       return _ImageStandIn(width: widget.width, height: widget.height);
     }
     if (Global.webPreview) {
       return Image.network(
-        widget.url,
+        url,
         width: widget.width,
         height: widget.height,
         fit: widget.fit,
         filterQuality: FilterQuality.low,
         gaplessPlayback: true,
-        webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
         errorBuilder: (context, error, stackTrace) {
           return _ImageStandIn(width: widget.width, height: widget.height);
         },
@@ -48,7 +48,7 @@ class _LazyImage extends State<LazyImage> {
     }
 
     return CachedNetworkImage(
-      imageUrl: widget.url,
+      imageUrl: url,
       width: widget.width,
       height: widget.height,
       fit: widget.fit,

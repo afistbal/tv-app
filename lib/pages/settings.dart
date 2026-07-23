@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:in_app_review/in_app_review.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/components/android_prompt_dialog.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/pages/policy_webview.dart';
 import 'package:yogotv/states/user.dart';
 
 class Settings extends StatefulWidget {
@@ -20,6 +19,7 @@ class Settings extends StatefulWidget {
 
 class _SettingsState extends State<Settings> {
   String _version = '';
+  final bool _deleteAccountEnabled = Global.deleteAccountEnabled;
 
   @override
   void initState() {
@@ -31,17 +31,12 @@ class _SettingsState extends State<Settings> {
     });
   }
 
-  Future<void> _openUrl(String url) async {
-    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-  }
-
-  Future<void> _rateUs() async {
-    final available = await InAppReview.instance.isAvailable();
-    if (available) {
-      await InAppReview.instance.requestReview();
-    } else {
-      Global.error(t.failed);
-    }
+  Future<void> _openPolicy(String title, String url) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PolicyWebView(title: title, url: url),
+      ),
+    );
   }
 
   Future<void> _signOut() async {
@@ -85,7 +80,8 @@ class _SettingsState extends State<Settings> {
                             title: t.terms_of_service,
                             showArrow: true,
                             topRadius: true,
-                            onTap: () => _openUrl(
+                            onTap: () => _openPolicy(
+                              t.terms_of_service,
                               'https://yogoshort.com/page/text?title=terms_of_service',
                             ),
                           ),
@@ -93,16 +89,19 @@ class _SettingsState extends State<Settings> {
                           _SettingsRow(
                             title: t.privacy_policy,
                             showArrow: true,
-                            onTap: () => _openUrl(
+                            onTap: () => _openPolicy(
+                              t.privacy_policy,
                               'https://yogoshort.com/page/text?title=privacy_policy',
                             ),
                           ),
-                          _DividerLine(),
-                          _SettingsRow(
-                            title: t.rating,
-                            showArrow: true,
-                            onTap: _rateUs,
-                          ),
+                          if (_deleteAccountEnabled) ...[
+                            _DividerLine(),
+                            _SettingsRow(
+                              title: t.delete_account,
+                              showArrow: true,
+                              onTap: () => context.push('/delete-account'),
+                            ),
+                          ],
                           _DividerLine(),
                           _SettingsRow(
                             title: t.version,

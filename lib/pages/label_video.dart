@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
+import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_cover.dart';
 
 class LabelVideo extends StatefulWidget {
   const LabelVideo({super.key, required this.title, required this.tagId});
@@ -40,23 +42,8 @@ class _LabelVideoState extends State<LabelVideo>
         bottom: false,
         child: Column(
           children: [
-            _Toolbar(title: widget.title, onBack: context.pop),
-            SizedBox(
-              height: 44,
-              child: TabBar(
-                controller: _tabController,
-                dividerColor: Colors.transparent,
-                indicatorColor: Color(0xffff3d5d),
-                indicatorSize: TabBarIndicatorSize.label,
-                labelColor: Colors.white,
-                unselectedLabelColor: Color(0xff999999),
-                labelStyle: TextStyle(fontSize: 14, height: 1),
-                tabs: [
-                  Tab(text: t.popular),
-                  Tab(text: t.new_string),
-                ],
-              ),
-            ),
+            AndroidToolbar(title: widget.title, onBack: context.pop),
+            _LabelFilterTabs(controller: _tabController),
             Expanded(
               child: TabBarView(
                 controller: _tabController,
@@ -67,6 +54,92 @@ class _LabelVideoState extends State<LabelVideo>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LabelFilterTabs extends StatelessWidget {
+  const _LabelFilterTabs({required this.controller});
+
+  final TabController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 15, vertical: 7),
+        child: AnimatedBuilder(
+          animation: controller,
+          builder: (context, child) {
+            final selectedIndex = controller.index;
+            return Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _LabelFilterTab(
+                    label: t.popular,
+                    selected: selectedIndex == 0,
+                    onTap: () => controller.animateTo(0),
+                  ),
+                  SizedBox(width: 8),
+                  _LabelFilterTab(
+                    label: t.new_string,
+                    selected: selectedIndex == 1,
+                    onTap: () => controller.animateTo(1),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _LabelFilterTab extends StatelessWidget {
+  const _LabelFilterTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(4),
+          child: AnimatedContainer(
+            duration: Duration(milliseconds: 150),
+            height: 30,
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? Color(0x26ff3d5d) : Color(0xff212121),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Color(0xffff3d5d) : Color(0xff999999),
+                fontSize: 14,
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -133,7 +206,7 @@ class _LabelVideoListState extends State<_LabelVideoList>
     final result = await api<Map<String, dynamic>>(
       'movie/tag-list',
       method: Method.post,
-      data: {'page': page, 'tag': widget.tagId, 'type': widget.type},
+      data: {'page': page, 'name': widget.tagId, 'type': widget.type},
       loading: false,
     );
     if (!mounted) {
@@ -168,7 +241,7 @@ class _LabelVideoListState extends State<_LabelVideoList>
       child: ListView.builder(
         controller: _scrollController,
         physics: AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.fromLTRB(15, 12, 15, 16),
+        padding: EdgeInsets.zero,
         itemCount: _items.length + (_loadingMore ? 1 : 0),
         itemBuilder: (context, index) {
           if (index >= _items.length) {
@@ -190,96 +263,85 @@ class _LabelVideoItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final map = _asMap(item);
     final title = _text(map['title']);
-    final image = _text(map['image'] ?? map['coverUrl'] ?? map['cover_url']);
+    final imagePath = movieCoverPath(map);
+    final image = imagePath.isEmpty ? '' : Global.static(imagePath);
+    final description = _text(map['introduction']);
     final tags = _tagLine(map);
     final id = map['id'] ?? map['movie_id'] ?? map['movieId'] ?? map['moveId'];
     return InkWell(
       onTap: id == null ? null : () => context.push('/play', extra: {'id': id}),
-      child: SizedBox(
-        height: 118,
-        child: Row(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: image.isEmpty
-                  ? Container(width: 84, height: 112, color: Color(0xff212121))
-                  : LazyImage(
-                      url: image,
-                      width: 84,
-                      height: 112,
-                      fit: BoxFit.cover,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+        child: SizedBox(
+          height: 120,
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: image.isEmpty
+                    ? Container(
+                        width: 90,
+                        height: 120,
+                        color: Color(0xff212121),
+                      )
+                    : LazyImage(
+                        url: image,
+                        width: 90,
+                        height: 120,
+                        fit: BoxFit.cover,
+                      ),
+              ),
+              SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(height: 4),
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        height: 1.2,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-            ),
-            SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      height: 1.2,
-                      fontWeight: FontWeight.w500,
+                    SizedBox(height: 4),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.topLeft,
+                        child: Text(
+                          description,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Color(0xff999999),
+                            fontSize: 12,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                  if (tags.isNotEmpty) ...[
-                    SizedBox(height: 8),
+                    SizedBox(height: 4),
                     Text(
                       tags,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Color(0xff999999), fontSize: 12),
+                      style: TextStyle(
+                        color: Color(0xff999999),
+                        fontSize: 12,
+                        height: 1.2,
+                      ),
                     ),
+                    SizedBox(height: 4),
                   ],
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
-    );
-  }
-}
-
-class _Toolbar extends StatelessWidget {
-  const _Toolbar({required this.title, required this.onBack});
-
-  final String title;
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 44,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned(
-            left: 15,
-            child: InkWell(
-              onTap: onBack,
-              child: SvgPicture.asset(
-                'assets/images/android/ic_toolbar_back.svg',
-                width: 24,
-                height: 24,
-              ),
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 56),
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: Colors.white, fontSize: 17),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -326,7 +388,7 @@ String _tagLine(Map<String, dynamic> item) {
   if (raw is! List) {
     return '';
   }
-  return raw.map(_tagName).where((tag) => tag.isNotEmpty).take(3).join('  ');
+  return raw.map(_tagName).where((tag) => tag.isNotEmpty).take(3).join(' , ');
 }
 
 String _tagName(dynamic tag) {

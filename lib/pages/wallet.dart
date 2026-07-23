@@ -189,7 +189,9 @@ class WalletHistory extends StatefulWidget {
 class _WalletHistoryState extends State<WalletHistory> {
   final _scrollController = ScrollController();
   final List<Map<String, dynamic>> _items = [];
+  late int _activeType;
   int _page = 1;
+  int _loadGeneration = 0;
   bool _loading = true;
   bool _loadingMore = false;
   bool _hasMore = true;
@@ -197,6 +199,7 @@ class _WalletHistoryState extends State<WalletHistory> {
   @override
   void initState() {
     super.initState();
+    _activeType = widget.type;
     _scrollController.addListener(_onScroll);
     _load(refresh: true);
   }
@@ -217,6 +220,8 @@ class _WalletHistoryState extends State<WalletHistory> {
     if (_loadingMore || (!refresh && !_hasMore)) {
       return;
     }
+    final generation = refresh ? ++_loadGeneration : _loadGeneration;
+    final requestedType = _activeType;
     if (refresh) {
       setState(() {
         _loading = true;
@@ -231,9 +236,11 @@ class _WalletHistoryState extends State<WalletHistory> {
       'user/balance/transactions',
       method: Method.post,
       loading: false,
-      data: {'type': widget.type, 'page': _page},
+      data: {'type': requestedType, 'page': _page},
     );
-    if (!mounted) {
+    if (!mounted ||
+        generation != _loadGeneration ||
+        requestedType != _activeType) {
       return;
     }
     final payload = result.d ?? {};
@@ -251,9 +258,27 @@ class _WalletHistoryState extends State<WalletHistory> {
     });
   }
 
+  void _switchType(int type) {
+    if (type == _activeType) {
+      return;
+    }
+    setState(() {
+      _activeType = type;
+      _items.clear();
+      _page = 1;
+      _hasMore = true;
+      _loading = true;
+      _loadingMore = false;
+    });
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+    _load(refresh: true);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isIn = widget.type == 1;
+    final isIn = _activeType == 1;
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -261,7 +286,7 @@ class _WalletHistoryState extends State<WalletHistory> {
         child: Column(
           children: [
             AndroidToolbar(title: t.details, onBack: context.pop),
-            _WalletHistoryTabs(activeType: widget.type),
+            _WalletHistoryTabs(activeType: _activeType, onChanged: _switchType),
             Expanded(
               child: RefreshIndicator(
                 color: Colors.white,
@@ -344,9 +369,10 @@ class _WalletRow extends StatelessWidget {
 }
 
 class _WalletHistoryTabs extends StatelessWidget {
-  const _WalletHistoryTabs({required this.activeType});
+  const _WalletHistoryTabs({required this.activeType, required this.onChanged});
 
   final int activeType;
+  final ValueChanged<int> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -358,22 +384,14 @@ class _WalletHistoryTabs extends StatelessWidget {
             child: _WalletHistoryTab(
               text: 'Recharge',
               active: activeType == 1,
-              onTap: () {
-                if (activeType != 1) {
-                  context.pushReplacement('/wallet/history', extra: 1);
-                }
-              },
+              onTap: () => onChanged(1),
             ),
           ),
           Expanded(
             child: _WalletHistoryTab(
               text: 'Consumption',
               active: activeType == 2,
-              onTap: () {
-                if (activeType != 2) {
-                  context.pushReplacement('/wallet/history', extra: 2);
-                }
-              },
+              onTap: () => onChanged(2),
             ),
           ),
         ],

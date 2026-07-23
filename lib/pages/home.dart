@@ -29,6 +29,7 @@ class _Home extends State<Home>
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _prefetchMovieGridTab('popular');
     Future.delayed(Duration(milliseconds: 500), () {
       _prefetchMovieGridTab('new');
     });
@@ -83,6 +84,7 @@ class _Home extends State<Home>
                   ],
                 ),
               ),
+              SizedBox(height: 8),
               Expanded(
                 child: TabBarView(
                   controller: _tabController,
@@ -153,11 +155,7 @@ class _HomeLoadMore extends StatelessWidget {
           SizedBox(width: 8),
           Text(
             t.loading,
-            style: TextStyle(
-              color: Color(0xff999999),
-              fontSize: 14,
-              height: 1,
-            ),
+            style: TextStyle(color: Color(0xff999999), fontSize: 14, height: 1),
           ),
         ],
       ),
@@ -464,7 +462,7 @@ class _MovieGridState extends State<_MovieGrid>
         ),
         slivers: [
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(15, 8, 15, 24),
+            padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
             sliver: _MovieSliverGrid(items: _items, columns: widget.columns),
           ),
           SliverToBoxAdapter(
@@ -641,51 +639,47 @@ class _CategoryMovieGridState extends State<_CategoryMovieGrid>
     return Column(
       children: [
         if (_tags.isNotEmpty)
-          Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: SizedBox(
-              height: 27,
-              child: ListView.separated(
-                padding: EdgeInsets.symmetric(horizontal: 15),
-                scrollDirection: Axis.horizontal,
-                itemBuilder: (context, index) {
-                  final active = index == _selectedTag;
-                  return Center(
-                    child: InkWell(
-                      onTap: () => _selectTag(index),
-                      child: AnimatedContainer(
-                        duration: Duration(milliseconds: 180),
-                        height: 27,
-                        padding: EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: active
-                              ? Color(0xffff3d5d).withAlpha(38)
-                              : Color(0xff212121),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          _tagLabel(_tags[index]),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: active
-                                ? Color(0xffff3d5d)
-                                : Color(0xff999999),
-                            fontSize: 14,
-                            height: 1,
-                            fontWeight: FontWeight.w400,
-                          ),
+          SizedBox(
+            height: 27,
+            child: ListView.separated(
+              padding: EdgeInsets.symmetric(horizontal: 15),
+              scrollDirection: Axis.horizontal,
+              itemBuilder: (context, index) {
+                final active = index == _selectedTag;
+                return Center(
+                  child: InkWell(
+                    onTap: () => _selectTag(index),
+                    child: AnimatedContainer(
+                      duration: Duration(milliseconds: 180),
+                      height: 27,
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: active
+                            ? Color(0xffff3d5d).withAlpha(38)
+                            : Color(0xff212121),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        _tagLabel(_tags[index]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: active ? Color(0xffff3d5d) : Color(0xff999999),
+                          fontSize: 14,
+                          height: 1,
+                          fontWeight: FontWeight.w400,
                         ),
                       ),
                     ),
-                  );
-                },
-                separatorBuilder: (context, index) => SizedBox(width: 8),
-                itemCount: _tags.length,
-              ),
+                  ),
+                );
+              },
+              separatorBuilder: (context, index) => SizedBox(width: 8),
+              itemCount: _tags.length,
             ),
           ),
+        SizedBox(height: 8),
         Expanded(
           child: _loading && _items.isEmpty
               ? Loading()
@@ -713,7 +707,7 @@ class _CategoryMovieGridState extends State<_CategoryMovieGrid>
                     ),
                     slivers: [
                       SliverPadding(
-                        padding: EdgeInsets.fromLTRB(15, 8, 15, 24),
+                        padding: EdgeInsets.fromLTRB(15, 0, 15, 24),
                         sliver: _MovieSliverGrid(items: _items, columns: 3),
                       ),
                       SliverToBoxAdapter(
@@ -739,6 +733,10 @@ class _MovieSliverGrid extends StatelessWidget {
   final List<dynamic> items;
   final int columns;
 
+  // Homepage covers use one portrait frame across every tab. `cover` crops the
+  // source as needed without changing its proportions.
+  static const double _posterAspectRatio = 3 / 4;
+
   static const int _debugImageLimit = int.fromEnvironment(
     'HOME_IMAGE_LIMIT',
     defaultValue: 0,
@@ -758,23 +756,27 @@ class _MovieSliverGrid extends StatelessWidget {
         crossAxisCount: columns,
         crossAxisSpacing: gap,
         mainAxisSpacing: 12,
-        childAspectRatio: columns == 2 ? 0.59 : 0.56,
+        childAspectRatio: columns == 2 ? 0.59 : 0.55,
       ),
       itemBuilder: (context, index) {
-        return _MovieCard(item: visibleItems[index]);
+        return _MovieCard(
+          item: visibleItems[index],
+          posterAspectRatio: _posterAspectRatio,
+        );
       },
     );
   }
 }
 
 class _MovieCard extends StatelessWidget {
-  const _MovieCard({required this.item});
+  const _MovieCard({required this.item, required this.posterAspectRatio});
 
   static const bool _debugDisableImages = bool.fromEnvironment(
     'HOME_DISABLE_IMAGES',
   );
 
   final dynamic item;
+  final double posterAspectRatio;
 
   @override
   Widget build(BuildContext context) {
@@ -796,13 +798,12 @@ class _MovieCard extends StatelessWidget {
               context,
             ).clamp(1.0, 3.0);
             final cacheWidth = (width * pixelRatio).round();
-            final cacheHeight = (width * 4 / 3 * pixelRatio).round();
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 AspectRatio(
-                  aspectRatio: 3 / 4,
+                  aspectRatio: posterAspectRatio,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: imageUrl.isEmpty || _debugDisableImages
@@ -813,7 +814,6 @@ class _MovieCard extends StatelessWidget {
                             height: double.infinity,
                             fit: BoxFit.cover,
                             cacheWidth: cacheWidth,
-                            cacheHeight: cacheHeight,
                           ),
                   ),
                 ),
@@ -831,16 +831,7 @@ class _MovieCard extends StatelessWidget {
                 ),
                 if (tags.isNotEmpty) ...[
                   SizedBox(height: 2),
-                  Text(
-                    tags.join(' , '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Color(0xff999999),
-                      fontSize: 12,
-                      height: 1.15,
-                    ),
-                  ),
+                  _MovieTagLine(tags: tags),
                 ],
               ],
             );
@@ -848,6 +839,72 @@ class _MovieCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _MovieTagLine extends StatelessWidget {
+  const _MovieTagLine({required this.tags});
+
+  static const _separator = ' , ';
+
+  final List<String> tags;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: Color(0xff999999),
+      fontSize: 12,
+      height: 1.15,
+    );
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final visible = _visibleTags(
+          tags.take(3).toList(),
+          style,
+          textDirection,
+          textScaler,
+          constraints.maxWidth,
+        );
+        if (visible.isEmpty) {
+          return SizedBox.shrink();
+        }
+        return Text(
+          visible.join(_separator),
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.clip,
+          style: style,
+        );
+      },
+    );
+  }
+
+  List<String> _visibleTags(
+    List<String> candidates,
+    TextStyle style,
+    TextDirection textDirection,
+    TextScaler textScaler,
+    double maxWidth,
+  ) {
+    if (candidates.isEmpty || maxWidth <= 0) {
+      return const [];
+    }
+    for (var count = candidates.length; count > 0; count--) {
+      final visible = candidates.take(count).toList();
+      final painter = TextPainter(
+        text: TextSpan(text: visible.join(_separator), style: style),
+        maxLines: 1,
+        textDirection: textDirection,
+        textScaler: textScaler,
+      )..layout();
+      if (painter.width <= maxWidth) {
+        return visible;
+      }
+    }
+    return const [];
   }
 }
 
@@ -1018,6 +1075,7 @@ List<String> _tagNames(Map item) {
         return _readableTag(_text(tag));
       })
       .where((name) => name.isNotEmpty)
+      .take(3)
       .toList();
   return names;
 }

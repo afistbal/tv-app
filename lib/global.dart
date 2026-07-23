@@ -33,12 +33,14 @@ class Global {
   static late final Dio dio;
   static late final PackageInfo packageInfo;
   static Map<String, dynamic>? config;
+  static bool delEnable = false;
   static bool tracking = false;
   static bool paused = false;
   static int _pauseAt = 0;
   static bool _blockedAd = false;
   static const String _userInfoKey = 'user_info';
   static const String _avatarUrlKey = 'avatar_url';
+  static const String _authProviderKey = 'auth_provider';
   static const String _apiBaseUrlKey = 'api_base_url';
   static const String _fallbackStaticBase = 'https://cos.yogoshort.com';
 
@@ -73,7 +75,7 @@ class Global {
       await _ensureWebPreviewSession();
     }
 
-    unawaited(refreshConfig());
+    await refreshConfig();
   }
 
   static Future<void> _resetSessionWhenApiBaseChanged() async {
@@ -84,6 +86,7 @@ class Global {
       await sp.remove('uid');
       await sp.remove(_userInfoKey);
       await sp.remove(_avatarUrlKey);
+      await sp.remove(_authProviderKey);
       logger.d('api base changed, cleared cached session');
     }
     if (cachedBase != currentBase) {
@@ -103,6 +106,7 @@ class Global {
   }
 
   static Future<void> refreshConfig() async {
+    delEnable = false;
     final result = await api<Map<String, dynamic>>(
       'config',
       loading: false,
@@ -110,8 +114,11 @@ class Global {
     );
     if (result.c == 0 && result.d != null) {
       config = result.d;
+      delEnable = _boolValue(result.d?['del_enable'] ?? result.d?['delEnable']);
     }
   }
+
+  static bool get deleteAccountEnabled => delEnable;
 
   static Future<void> _ensureWebPreviewSession() async {
     final deviceUuid = await Global.deviceUuid();
@@ -214,6 +221,14 @@ class Global {
     String avatarUrl = '',
   }) {
     final map = _extractUserInfoMap(info);
+    final resolvedAvatarUrl = _firstNotEmpty([
+      avatarUrl,
+      map['avatar_url'],
+      map['avatarUrl'],
+      map['avatar'],
+      map['photo_url'],
+      map['photoURL'],
+    ]);
     return UserStateValue(
       name: _text(map['name']).isEmpty ? 'No Name' : _text(map['name']),
       uid: _text(map['uid']),
@@ -222,7 +237,8 @@ class Global {
       vip: _intValue(map['vip']),
       admin: _intValue(map['admin']),
       anonymous: _intValue(map['anonymous']),
-      avatarUrl: avatarUrl,
+      avatarUrl: resolvedAvatarUrl,
+      provider: _text(map['provider']),
     );
   }
 
@@ -238,6 +254,19 @@ class Global {
     }
     if (token != null && token.isNotEmpty) {
       await sp.setString('token', token);
+    }
+    final anonymous = _intValue(map['anonymous']);
+    final provider = _text(map['provider']);
+    if (anonymous == 1) {
+      map.remove('provider');
+      await sp.remove(_authProviderKey);
+    } else if (provider.isNotEmpty) {
+      await sp.setString(_authProviderKey, provider);
+    } else {
+      final cachedProvider = sp.getString(_authProviderKey) ?? '';
+      if (cachedProvider.isNotEmpty) {
+        map['provider'] = cachedProvider;
+      }
     }
     await sp.setString(_userInfoKey, jsonEncode(map));
     final uid = _text(map['uid']);
@@ -312,11 +341,19 @@ class Global {
   }
 
   static void payTrace(String message) {
-    final entry = '[PAY] $message';
-    logger.d(entry);
-    // Keep payment diagnostics visible in Flutter, Xcode, and device log tools.
-    // ignore: avoid_print
-    print(entry);
+    // Payment tracing is intentionally disabled in production builds.
+  }
+
+  static void authTrace(
+    String label,
+    Object? value, {
+    bool includeSecretsInFile = false,
+  }) {
+    // Authentication tracing is intentionally disabled in production builds.
+  }
+
+  static void clearAuthTrace() {
+    // Authentication tracing is intentionally disabled in production builds.
   }
 
   static String static(String name) {
@@ -730,27 +767,59 @@ class Global {
         currentUser?.uniqueId,
         sp.getString('unique_id'),
       ]);
+      final providerNameKey = 'provider_name_${provider}_$uid';
+      final cachedProviderName = sp.getString(providerNameKey) ?? '';
+      final currentName = currentUser?.anonymous == 1
+          ? ''
+          : _usableDisplayName(currentUser?.name);
+      final emailName = email.contains('@') ? email.split('@').first : '';
+      final providerName = _usableDisplayName(name);
+      final resolvedName = _firstNotEmpty([
+        providerName,
+        _usableDisplayName(cachedProviderName),
+        currentName,
+        provider == 'apple' ? t.apple_user : '',
+        emailName,
+      ]);
+      if (providerName.isNotEmpty) {
+        await sp.setString(providerNameKey, providerName);
+      }
+      final requestData = <String, dynamic>{
+        'anonymous': 0,
+        'anonymous_id': anonymousId.isNotEmpty ? anonymousId : null,
+        'email': email,
+        'name': resolvedName,
+        'uid': uid,
+        'provider': provider,
+        'ad_attr_info': AdjustTracking.attributionInfo,
+      };
+      authTrace('login.signin.request', requestData);
       final result = await api<Map<String, dynamic>>(
         'login/signin',
         method: Method.post,
-        data: {
-          'anonymous': 0,
-          'anonymous_id': anonymousId.isNotEmpty ? anonymousId : null,
-          'email': email,
-          'name': _loginName(name, email, currentUser),
-          'uid': uid,
-          'provider': provider,
-          'ad_attr_info': AdjustTracking.attributionInfo,
-        },
+        data: requestData,
       );
+      authTrace('login.signin.response', {
+        'code': result.c,
+        'message': result.m,
+        'data': result.d,
+      });
 
       if (result.c != 0) {
         return false;
       }
 
       final data = result.d ?? {};
+      final info = _extractUserInfoMap(data['info']);
+      info['provider'] = provider;
+      final backendName = _usableDisplayName(info['name']);
+      if (backendName.isEmpty) {
+        info['name'] = resolvedName;
+      } else {
+        await sp.setString(providerNameKey, backendName);
+      }
       final value = await cacheUserInfo(
-        data['info'],
+        info,
         token: data['token']?.toString(),
         avatarUrl: avatarUrl,
       );
@@ -797,11 +866,41 @@ class Global {
       if (context.mounted) {
         context.read<UserState>().set(value);
       }
-      Global.logger.d('logout switched to anonymous login');
+      Global.logger.d(
+        '[ACCOUNT] switched to anonymous uid=${value.uid} uniqueId=${value.uniqueId} '
+        'anonymous=${value.anonymous}',
+      );
       return true;
     } on Exception catch (error) {
       Global.logger.d('logout anonymous login failed: $error');
       return false;
+    }
+  }
+
+  static Future<void> clearDeletedAccountSession() async {
+    final keys = sp.getKeys().where(
+      (key) =>
+          key == 'token' ||
+          key == 'uid' ||
+          key == 'unique_id' ||
+          key == 'user_info' ||
+          key == 'avatar_url' ||
+          key == 'auth_provider' ||
+          key == 'email' ||
+          key == 'mail-code-expire' ||
+          key.startsWith('provider_name_') ||
+          key.startsWith('apple_pending_order_token_'),
+    );
+    for (final key in keys) {
+      await sp.remove(key);
+    }
+
+    if (!kIsWeb) {
+      try {
+        await FirebaseAuth.instance.signOut();
+      } on Exception catch (error) {
+        logger.d('firebase sign out after account deletion failed: $error');
+      }
     }
   }
 
@@ -831,13 +930,38 @@ class Global {
     ]);
   }
 
-  static String _loginName(
-    String name,
-    String email,
-    UserStateValue? currentUser,
-  ) {
-    final cachedName = currentUser?.anonymous == 1 ? '' : currentUser?.name;
-    final emailName = email.contains('@') ? email.split('@').first : '';
-    return _firstNotEmpty([name, cachedName, emailName]);
+  static String firebaseCredentialDisplayName(UserCredential credential) {
+    final profile = credential.additionalUserInfo?.profile ?? const {};
+    final rawName = profile['name'];
+    final nameMap = rawName is Map ? rawName : const {};
+    final givenName = _firstNotEmpty([
+      profile['given_name'],
+      profile['givenName'],
+      nameMap['firstName'],
+      nameMap['givenName'],
+    ]);
+    final familyName = _firstNotEmpty([
+      profile['family_name'],
+      profile['familyName'],
+      nameMap['lastName'],
+      nameMap['familyName'],
+    ]);
+    final composedName = [
+      givenName,
+      familyName,
+    ].where((part) => part.isNotEmpty).join(' ');
+    return _firstNotEmpty([
+      firebaseDisplayName(credential.user),
+      rawName is String ? rawName : '',
+      composedName,
+    ]);
+  }
+
+  static String _usableDisplayName(dynamic value) {
+    final name = _text(value).trim();
+    if (name == 'No Name' || RegExp(r'\*{2,}').hasMatch(name)) {
+      return '';
+    }
+    return name;
   }
 }

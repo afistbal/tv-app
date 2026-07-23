@@ -9,12 +9,12 @@ import 'package:go_router/go_router.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
-import 'package:yogotv/app_config.dart';
 import 'package:yogotv/components/android_toolbar.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_cover.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/states/user.dart';
 
@@ -86,13 +86,16 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     super.initState();
     Global.payTrace('VIP page entered build=verify-order-cache-v2');
     WidgetsBinding.instance.addObserver(this);
-    if (!kIsWeb && Platform.isIOS) {
-      Purchase.canProcess = true;
-    }
     Global.blockAd();
-    _userStateListener = context.read<UserState>().stream.listen((_) {
+    _userStateListener = context.read<UserState>().stream.listen((value) {
       if (mounted) {
-        setState(() {});
+        final becameVip = (value?.vip ?? 0) > 0 && !_isVip;
+        setState(() {
+          _isVip = _isVip || (value?.vip ?? 0) > 0;
+        });
+        if (becameVip) {
+          unawaited(_loadData(showLoading: false));
+        }
       }
     });
     _loadData();
@@ -125,15 +128,15 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
       method: Method.post,
       loading: false,
     );
-    final videosFuture = api<List<dynamic>>(
-      'feed/membership',
+    final videosFuture = api<dynamic>(
+      'feed/membership?page=1',
       method: Method.post,
       loading: false,
     );
     final productsFuture = _loadProducts();
 
     Result<Map<String, dynamic>>? vip;
-    Result<List<dynamic>>? videos;
+    Result<dynamic>? videos;
     List<dynamic> products = _subscriptions;
     try {
       vip = await vipFuture;
@@ -149,18 +152,27 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     }
 
     final vipPayload = vip?.d ?? {};
-    final expire = int.tryParse('${vipPayload['vip_expire_at'] ?? 0}') ?? 0;
-    final isVip = expire > 0 || context.read<UserState>().isVip;
+    final expire = _membershipExpire(vipPayload);
+    final isVip =
+        _membershipIsActive(vipPayload) || context.read<UserState>().isVip;
     final subscriptions = products;
+    final vipVideos = videos?.c == 0
+        ? _membershipRows(videos?.d).take(6).toList()
+        : _vipVideos;
 
     setState(() {
       _isVip = isVip;
       _vipExpire = _expireText(expire);
-      _vipVideos = videos?.d ?? _vipVideos;
+      _vipVideos = vipVideos;
       _subscriptions = subscriptions;
       _selectedId = _selectedId ?? _defaultSelectedId(subscriptions);
       _loading = false;
     });
+    if (_applePayMode) {
+      unawaited(
+        Purchase.warmUpProductDetails(subscriptions.map(_storeProductId)),
+      );
+    }
     if (!_viewContentTracked) {
       _viewContentTracked = true;
       AdjustTracking.trackViewContent();
@@ -195,11 +207,19 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
 
   Future<void> _handleRestore() async {
     setState(() => _loading = true);
-    if (!kIsWeb && Platform.isIOS) {
-      await Purchase.restore();
+    final isIosRestore = !kIsWeb && Platform.isIOS;
+    var restored = false;
+    if (isIosRestore) {
+      restored = await Purchase.restore();
     }
-    await _refreshUser();
+    await _refreshMembership();
     await _loadData();
+    if (isIosRestore &&
+        !restored &&
+        mounted &&
+        !context.read<UserState>().isVip) {
+      Global.warning(t.no_order);
+    }
   }
 
   Future<void> _handleSubscribe() async {
@@ -243,8 +263,8 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
             ),
           ),
         );
-        Global.payTrace('membership refresh user');
-        await _refreshUser();
+        Global.payTrace('membership refresh vip');
+        await _refreshMembership();
         if (!mounted) {
           return;
         }
@@ -254,7 +274,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
           _isVip = userVip || _isVip;
           _loading = false;
         });
-        unawaited(_loadData(showLoading: false));
+        await _loadData(showLoading: false);
       }
       return;
     }
@@ -281,10 +301,10 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     return null;
   }
 
-  Future<void> _refreshUser() async {
+  Future<void> _refreshMembership() async {
     final user = await api<Map<String, dynamic>>(
-      'user',
-      method: Method.get,
+      'user/membership',
+      method: Method.post,
       loading: false,
     );
     final data = user.d;
@@ -293,12 +313,16 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
       return;
     }
     Global.logger.d(
-      'membership_refresh_user vip=${data['vip']} anonymous=${data['anonymous']}',
+      'membership_refresh vip_expire_at=${data['vip_expire_at']}',
     );
-    Global.payTrace('membership user vip=${data['vip']}');
-    final value = await Global.cacheUserInfo(data);
-    if (value != null && mounted) {
-      context.read<UserState>().set(value);
+    Global.payTrace(
+      'membership response vip_expire_at=${data['vip_expire_at']}',
+    );
+    final expireMillis = int.tryParse('${data['vip_expire_at'] ?? 0}') ?? 0;
+    final isVip = expireMillis > 0;
+    final userState = context.read<UserState>();
+    if (userState.isVip != isVip) {
+      userState.setVip(isVip ? 1 : 0);
     }
   }
 
@@ -352,14 +376,16 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ],
-                                SizedBox(height: 14),
-                                _VipBenefitsPanel(),
-                                if (_vipVideos.isNotEmpty) ...[
+                                if (_isVip) ...[
                                   SizedBox(height: 14),
-                                  _SectionTitle(t.vip_exclusives),
-                                  SizedBox(height: 14),
-                                  _VipExclusiveGrid(items: _vipVideos),
+                                  _VipBenefitsPanel(),
                                 ],
+                                SizedBox(height: 14),
+                                _SectionTitle(t.vip_exclusives),
+                                _VipExclusiveGrid(
+                                  items: _vipVideos,
+                                  minimumSlots: 6,
+                                ),
                                 SizedBox(height: 14),
                                 _RechargeTips(),
                               ],
@@ -393,6 +419,17 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
+                                if (!kIsWeb && Platform.isIOS)
+                                  TextButton(
+                                    onPressed: _handleRestore,
+                                    child: Text(
+                                      t.restore_purchases,
+                                      style: TextStyle(
+                                        color: Color(0xff999999),
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -427,9 +464,6 @@ class _VipPaySheetState extends State<_VipPaySheet> {
   void initState() {
     super.initState();
     Global.payTrace('VIP sheet entered build=verify-order-cache-v2');
-    if (!kIsWeb && Platform.isIOS) {
-      Purchase.canProcess = true;
-    }
     _loadData();
     AdjustTracking.trackViewContent();
   }
@@ -451,9 +485,15 @@ class _VipPaySheetState extends State<_VipPaySheet> {
       method: Method.post,
       loading: false,
     );
+    final vipFuture = api<Map<String, dynamic>>(
+      'user/membership',
+      method: Method.post,
+      loading: false,
+    );
 
     var products = await productsFuture;
     final balance = await balanceFuture;
+    final vip = await vipFuture;
     if (_applePayMode && products.m == 'Authentication Failure.') {
       Global.payTrace('products auth failed, refresh anonymous session');
       await Global.ensureAnonymousSession(force: true);
@@ -468,8 +508,18 @@ class _VipPaySheetState extends State<_VipPaySheet> {
     if (!mounted) {
       return;
     }
+    if (vip.c == 0 && vip.d != null) {
+      final expireMillis = int.tryParse('${vip.d!['vip_expire_at'] ?? 0}') ?? 0;
+      context.read<UserState>().setVip(expireMillis > 0 ? 1 : 0);
+    }
     final subscriptions = _subscriptionRows(products.d);
     final coins = _purchaseRows(products.d);
+    if (_applePayMode) {
+      await Purchase.warmUpProductDetails(coins.map(_storeProductId));
+    }
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _subscriptions = subscriptions;
       _coins = coins;
@@ -507,9 +557,6 @@ class _VipPaySheetState extends State<_VipPaySheet> {
       );
       Global.payTrace('sheet IAP returned=$result');
       if (result) {
-        if (payResult == VipPayResult.coins) {
-          await _refreshBalance();
-        }
         await TikTokEventsSdk.logEvent(
           event: TikTokEvent(
             eventName: 'subscribe',
@@ -520,8 +567,16 @@ class _VipPaySheetState extends State<_VipPaySheet> {
             ),
           ),
         );
-        Global.payTrace('sheet refresh user');
-        await _refreshUser();
+        Global.payTrace(
+          payResult == VipPayResult.coins
+              ? 'sheet refresh balance'
+              : 'sheet refresh vip',
+        );
+        if (payResult == VipPayResult.coins) {
+          await _refreshBalance();
+        } else {
+          await _refreshMembership();
+        }
         if (!mounted) {
           return;
         }
@@ -556,10 +611,10 @@ class _VipPaySheetState extends State<_VipPaySheet> {
     return coinProduct ? VipPayResult.coins : VipPayResult.vip;
   }
 
-  Future<void> _refreshUser() async {
+  Future<void> _refreshMembership() async {
     final user = await api<Map<String, dynamic>>(
-      'user',
-      method: Method.get,
+      'user/membership',
+      method: Method.post,
       loading: false,
     );
     final data = user.d;
@@ -567,13 +622,15 @@ class _VipPaySheetState extends State<_VipPaySheet> {
       Global.payTrace('sheet user refresh empty c=${user.c}');
       return;
     }
-    Global.logger.d(
-      'vip_sheet_refresh_user vip=${data['vip']} anonymous=${data['anonymous']}',
+    Global.logger.d('vip_sheet_refresh vip_expire_at=${data['vip_expire_at']}');
+    Global.payTrace(
+      'sheet membership response vip_expire_at=${data['vip_expire_at']}',
     );
-    Global.payTrace('sheet user vip=${data['vip']}');
-    final value = await Global.cacheUserInfo(data);
-    if (value != null && mounted) {
-      context.read<UserState>().set(value);
+    final expireMillis = int.tryParse('${data['vip_expire_at'] ?? 0}') ?? 0;
+    final isVip = expireMillis > 0;
+    final userState = context.read<UserState>();
+    if (userState.isVip != isVip) {
+      userState.setVip(isVip ? 1 : 0);
     }
   }
 
@@ -583,9 +640,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
       method: Method.post,
       loading: false,
     );
-    Global.payTrace(
-      'sheet balance refresh c=${balance.c} value=${balance.d}',
-    );
+    Global.payTrace('sheet balance refresh c=${balance.c} value=${balance.d}');
     if (!mounted || balance.c != 0) {
       return;
     }
@@ -594,7 +649,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
 
   @override
   Widget build(BuildContext context) {
-    final isVip = context.read<UserState>().isVip;
+    final isVip = context.watch<UserState>().isVip;
     return ClipRRect(
       borderRadius: widget.fullPage
           ? BorderRadius.zero
@@ -1240,18 +1295,34 @@ class _OfferCountdownBadge extends StatefulWidget {
 
 class _OfferCountdownBadgeState extends State<_OfferCountdownBadge> {
   static const _offerDuration = Duration(minutes: 30);
-  late final DateTime _startedAt;
+  static const _deadlineKey = 'membership-offer-countdown-deadline';
+  late int _deadlineMs;
   late final Timer _timer;
 
   @override
   void initState() {
     super.initState();
-    _startedAt = DateTime.now();
+    _deadlineMs = _resolveDeadline();
     _timer = Timer.periodic(Duration(seconds: 1), (_) {
       if (mounted) {
+        if (DateTime.now().millisecondsSinceEpoch >= _deadlineMs) {
+          _deadlineMs = _resolveDeadline();
+        }
         setState(() {});
       }
     });
+  }
+
+  static int _resolveDeadline() {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final savedDeadline = Global.sp.getInt(_deadlineKey) ?? 0;
+    if (savedDeadline > nowMs) {
+      return savedDeadline;
+    }
+
+    final nextDeadline = nowMs + _offerDuration.inMilliseconds;
+    unawaited(Global.sp.setInt(_deadlineKey, nextDeadline));
+    return nextDeadline;
   }
 
   @override
@@ -1262,17 +1333,16 @@ class _OfferCountdownBadgeState extends State<_OfferCountdownBadge> {
 
   @override
   Widget build(BuildContext context) {
-    final elapsed = DateTime.now().difference(_startedAt);
-    var remaining = _offerDuration - elapsed;
-    if (remaining.isNegative) {
-      remaining = _offerDuration;
-    }
-    final minutes = remaining.inMinutes
+    final remainingMs = _deadlineMs - DateTime.now().millisecondsSinceEpoch;
+    final remainingSeconds = remainingMs <= 0
+        ? 0
+        : (remainingMs / Duration.millisecondsPerSecond).ceil();
+    final minutes = (remainingSeconds ~/ Duration.secondsPerMinute)
         .remainder(60)
         .toString()
         .padLeft(2, '0');
-    final seconds = remaining.inSeconds
-        .remainder(60)
+    final seconds = remainingSeconds
+        .remainder(Duration.secondsPerMinute)
         .toString()
         .padLeft(2, '0');
 
@@ -1407,7 +1477,11 @@ class _VipBenefitAsset extends StatelessWidget {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Color(0xff633e25), fontSize: 10),
+            style: TextStyle(
+              color: Color(0xff633e25),
+              fontSize: 12,
+              height: 1.2,
+            ),
           ),
         ],
       ),
@@ -1416,23 +1490,27 @@ class _VipBenefitAsset extends StatelessWidget {
 }
 
 class _VipExclusiveGrid extends StatelessWidget {
-  const _VipExclusiveGrid({required this.items});
+  const _VipExclusiveGrid({required this.items, this.minimumSlots = 0});
 
   final List<dynamic> items;
+  final int minimumSlots;
 
   @override
   Widget build(BuildContext context) {
     return GridView.builder(
       shrinkWrap: true,
       physics: NeverScrollableScrollPhysics(),
-      itemCount: items.length,
+      itemCount: items.length < minimumSlots ? minimumSlots : items.length,
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
         crossAxisSpacing: 10,
         mainAxisSpacing: 12,
-        childAspectRatio: 0.58,
+        childAspectRatio: items.isEmpty ? 3 / 4 : 0.57,
       ),
       itemBuilder: (context, index) {
+        if (index >= items.length) {
+          return const _VipExclusivePlaceholder();
+        }
         final item = items[index];
         final image = _posterUrl(item);
         final ratio = MediaQuery.of(context).devicePixelRatio.clamp(1.0, 3.0);
@@ -1441,19 +1519,21 @@ class _VipExclusiveGrid extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
+              AspectRatio(
+                aspectRatio: 3 / 4,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: image.isEmpty
-                      ? Container(color: Color(0xff212121))
-                      : LazyImage(
-                          url: image,
-                          width: double.infinity,
-                          height: double.infinity,
-                          fit: BoxFit.cover,
-                          cacheWidth: (120 * ratio).round(),
-                          cacheHeight: (160 * ratio).round(),
-                        ),
+                  child: SizedBox.expand(
+                    child: image.isEmpty
+                        ? const _VipPosterPlaceholder()
+                        : LazyImage(
+                            url: image,
+                            width: double.infinity,
+                            height: double.infinity,
+                            fit: BoxFit.cover,
+                            cacheWidth: (120 * ratio).round(),
+                          ),
+                  ),
                 ),
               ),
               SizedBox(height: 8),
@@ -1472,6 +1552,42 @@ class _VipExclusiveGrid extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _VipExclusivePlaceholder extends StatelessWidget {
+  const _VipExclusivePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: AspectRatio(
+        aspectRatio: 3 / 4,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: const _VipPosterPlaceholder(),
+        ),
+      ),
+    );
+  }
+}
+
+class _VipPosterPlaceholder extends StatelessWidget {
+  const _VipPosterPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: Color(0xff212121),
+      child: Center(
+        child: SvgPicture.asset(
+          'assets/images/android/ic_logo_loading.svg',
+          width: 32,
+          height: 32,
+        ),
+      ),
     );
   }
 }
@@ -1539,7 +1655,10 @@ Future<void> _trackCheckout({
     Global.payTrace('web preview skip checkout tracking');
     return;
   }
-  AdjustTracking.trackInitiateCheckout(productId: storeProductId, amount: price);
+  AdjustTracking.trackInitiateCheckout(
+    productId: storeProductId,
+    amount: price,
+  );
   try {
     await TikTokEventsSdk.logEvent(
       event: TikTokEvent(
@@ -1596,6 +1715,47 @@ List<dynamic> _purchaseRows(dynamic payload) {
     final coin = double.tryParse(_coinAmount(item)) ?? 0;
     return coin > 0 || _productType(item) == 2;
   }).toList();
+}
+
+List<dynamic> _membershipRows(dynamic payload) {
+  dynamic current = payload;
+  for (var depth = 0; depth < 3; depth += 1) {
+    if (current is List) {
+      return current.whereType<Map>().toList();
+    }
+    if (current is! Map) {
+      return const [];
+    }
+    current =
+        current['data'] ??
+        current['list'] ??
+        current['items'] ??
+        current['videos'];
+  }
+  return current is List ? current.whereType<Map>().toList() : const [];
+}
+
+int _membershipExpire(Map<String, dynamic> payload) {
+  final raw = int.tryParse(
+    _text(
+      payload['vip_expire_at'] ??
+          payload['expire_at'] ??
+          payload['expire_time'] ??
+          payload['expire'],
+    ),
+  );
+  if (raw == null || raw <= 0) {
+    return 0;
+  }
+  return raw > 100000000000 ? raw ~/ 1000 : raw;
+}
+
+bool _membershipIsActive(Map<String, dynamic> payload) {
+  final value = payload['is_vip'] ?? payload['isVip'] ?? payload['vip'];
+  return value == true ||
+      value == 1 ||
+      _text(value) == '1' ||
+      _membershipExpire(payload) > 0;
 }
 
 String? _defaultSelectedId(List<dynamic> subscriptions) {
@@ -1728,10 +1888,7 @@ String _expireText(int seconds) {
 }
 
 String _posterUrl(dynamic item) {
-  if (item is! Map) {
-    return '';
-  }
-  final image = _text(item['image']);
+  final image = movieCoverPath(item);
   return image.isEmpty ? '' : Global.static(image);
 }
 
@@ -1761,16 +1918,5 @@ String _text(dynamic value) {
 }
 
 String _rechargeTips() {
-  final appName = AppConfig.current.brandDisplayName;
-  return t.recharge_tips
-      .map((line) {
-        if (line is String) {
-          return line;
-        }
-        if (line is String Function({required Object s})) {
-          return line(s: appName);
-        }
-        return line.toString();
-      })
-      .join('\n\n');
+  return t.recharge_tips.join('\n\n');
 }

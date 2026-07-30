@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
@@ -15,6 +16,7 @@ import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/states/user.dart';
 
@@ -58,7 +60,11 @@ class TopUpPage extends StatelessWidget {
         bottom: false,
         child: Column(
           children: [
-            AndroidToolbar(title: t.top_up, onBack: context.pop),
+            AndroidToolbar(
+              title: t.top_up,
+              onBack: context.pop,
+              trailing: _paymentDiagnosticsButton(context),
+            ),
             Expanded(
               child: _VipPaySheet(episodeCoins: episodeCoins, fullPage: true),
             ),
@@ -80,6 +86,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
   List<dynamic> _subscriptions = [];
   List<dynamic> _vipVideos = [];
   bool _viewContentTracked = false;
+  int _eligibilityRequest = 0;
 
   @override
   void initState() {
@@ -169,6 +176,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
       _loading = false;
     });
     if (_applePayMode) {
+      _refreshAppleIntroductoryEligibility(subscriptions);
       unawaited(
         Purchase.warmUpProductDetails(subscriptions.map(_storeProductId)),
       );
@@ -203,6 +211,17 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     }
     Global.payTrace('products response c=${products.c} m=${products.m}');
     return _subscriptionRows(products.d);
+  }
+
+  void _refreshAppleIntroductoryEligibility(List<dynamic> subscriptions) {
+    final request = ++_eligibilityRequest;
+    unawaited(() async {
+      final updated = await _withAppleIntroductoryEligibility(subscriptions);
+      if (!mounted || request != _eligibilityRequest) {
+        return;
+      }
+      setState(() => _subscriptions = updated);
+    }());
   }
 
   Future<void> _handleRestore() async {
@@ -252,6 +271,13 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
         type: 1,
       );
       Global.payTrace('membership IAP returned=$result');
+      if (!result) {
+        if (!mounted) {
+          return;
+        }
+        await _showPurchaseDiagnostics(context, success: false);
+        return;
+      }
       if (result) {
         await TikTokEventsSdk.logEvent(
           event: TikTokEvent(
@@ -275,6 +301,9 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
           _loading = false;
         });
         await _loadData(showLoading: false);
+        if (mounted) {
+          await _showPurchaseDiagnostics(context, success: true);
+        }
       }
       return;
     }
@@ -336,7 +365,11 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
         bottom: false,
         child: Column(
           children: [
-            AndroidToolbar(title: t.membership, onBack: context.pop),
+            AndroidToolbar(
+              title: t.membership,
+              onBack: context.pop,
+              trailing: _paymentDiagnosticsButton(context),
+            ),
             Expanded(
               child: _loading
                   ? Loading()
@@ -459,6 +492,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
   String? _selectedId;
   List<dynamic> _subscriptions = [];
   List<dynamic> _coins = [];
+  int _eligibilityRequest = 0;
 
   @override
   void initState() {
@@ -514,9 +548,6 @@ class _VipPaySheetState extends State<_VipPaySheet> {
     }
     final subscriptions = _subscriptionRows(products.d);
     final coins = _purchaseRows(products.d);
-    if (_applePayMode) {
-      await Purchase.warmUpProductDetails(coins.map(_storeProductId));
-    }
     if (!mounted) {
       return;
     }
@@ -530,6 +561,21 @@ class _VipPaySheetState extends State<_VipPaySheet> {
           (coins.isEmpty ? null : _productId(coins.first));
       _loading = false;
     });
+    if (_applePayMode) {
+      _refreshAppleIntroductoryEligibility(subscriptions);
+      unawaited(Purchase.warmUpProductDetails(coins.map(_storeProductId)));
+    }
+  }
+
+  void _refreshAppleIntroductoryEligibility(List<dynamic> subscriptions) {
+    final request = ++_eligibilityRequest;
+    unawaited(() async {
+      final updated = await _withAppleIntroductoryEligibility(subscriptions);
+      if (!mounted || request != _eligibilityRequest) {
+        return;
+      }
+      setState(() => _subscriptions = updated);
+    }());
   }
 
   Future<void> _pay(dynamic product) async {
@@ -556,6 +602,13 @@ class _VipPaySheetState extends State<_VipPaySheet> {
         type: type,
       );
       Global.payTrace('sheet IAP returned=$result');
+      if (!result) {
+        if (!mounted) {
+          return;
+        }
+        await _showPurchaseDiagnostics(context, success: false);
+        return;
+      }
       if (result) {
         await TikTokEventsSdk.logEvent(
           event: TikTokEvent(
@@ -577,6 +630,10 @@ class _VipPaySheetState extends State<_VipPaySheet> {
         } else {
           await _refreshMembership();
         }
+        if (!mounted) {
+          return;
+        }
+        await _showPurchaseDiagnostics(context, success: true);
         if (!mounted) {
           return;
         }
@@ -635,16 +692,39 @@ class _VipPaySheetState extends State<_VipPaySheet> {
   }
 
   Future<void> _refreshBalance() async {
-    final balance = await api<dynamic>(
-      'user/balance',
-      method: Method.post,
-      loading: false,
+    final previousBalance = _balance;
+    PaymentDiagnostics.stage(
+      'balance_refresh_started',
+      details: 'before=$previousBalance',
     );
-    Global.payTrace('sheet balance refresh c=${balance.c} value=${balance.d}');
-    if (!mounted || balance.c != 0) {
-      return;
+    try {
+      final balance = await api<dynamic>(
+        'user/balance',
+        method: Method.post,
+        loading: false,
+        showError: false,
+      );
+      Global.payTrace(
+        'sheet balance refresh c=${balance.c} value=${balance.d}',
+      );
+      if (balance.c != 0) {
+        PaymentDiagnostics.warning(
+          'balance_refresh_rejected',
+          'serverCode=${balance.c} serverMessage=${balance.m}',
+        );
+        return;
+      }
+      final nextBalance = _cleanNumber(balance.d);
+      PaymentDiagnostics.stage(
+        'balance_refresh_ok',
+        details: 'before=$previousBalance after=$nextBalance',
+      );
+      if (mounted) {
+        setState(() => _balance = nextBalance);
+      }
+    } on Exception catch (error) {
+      PaymentDiagnostics.warning('balance_refresh_failed', '$error');
     }
-    setState(() => _balance = _cleanNumber(balance.d));
   }
 
   @override
@@ -1043,34 +1123,29 @@ class _VipPlanCard extends StatelessWidget {
     final title = _productTitle(item);
     final basePlan = _planId(item);
     final price = _text(item['price']);
-    final explicitFirstPrice = _text(item['first_price'] ?? item['firstPrice']);
-    final renewalPrice = _text(item['renewal_price'] ?? item['renewalPrice']);
-    final offerPrice = explicitFirstPrice.isNotEmpty
-        ? explicitFirstPrice
-        : price;
-    final renewalAfterOffer = explicitFirstPrice.isNotEmpty
-        ? price
-        : renewalPrice;
+    final firstPrice = _text(item['first_price'] ?? item['firstPrice']);
+    final appleEligibility = item['_apple_intro_eligible'];
+    final isOfferEligible = appleEligibility == true;
     final hasOffer =
-        basePlan == 'weekly' &&
-        offerPrice.isNotEmpty &&
-        renewalAfterOffer.isNotEmpty &&
-        _moneyNumber(offerPrice) < _moneyNumber(renewalAfterOffer);
-    final displayPrice = hasOffer ? offerPrice : price;
+        (basePlan == 'weekly' || basePlan == 'yearly') &&
+        isOfferEligible &&
+        firstPrice.isNotEmpty &&
+        price.isNotEmpty &&
+        _moneyNumber(firstPrice) < _moneyNumber(price);
+    final displayPrice = hasOffer ? firstPrice : price;
     final bonusValue = _bonusValue(item);
-    final discountPercent = hasOffer
-        ? _discountPercent(offerPrice, renewalAfterOffer)
+    final showTimedOffer = hasOffer && basePlan == 'weekly';
+    final discountPercent = showTimedOffer
+        ? _discountPercent(firstPrice, price)
         : 0;
     final badgeText = !hasOffer && bonusValue > 0
         ? '+${(bonusValue * 100).toInt()}%'
         : '';
-    final description = basePlan == 'weekly'
-        ? (hasOffer
-              ? t.first_week_string_then_string_week(
-                  s: _moneyParam(offerPrice),
-                  s2: _moneyParam(renewalAfterOffer),
-                )
-              : t.auto_renewal_cancel_anytime)
+    final description = showTimedOffer
+        ? t.first_week_string_then_string_week(
+            s: _moneyParam(firstPrice),
+            s2: _moneyParam(price),
+          )
         : t.auto_renewal_cancel_anytime;
 
     final bgGradient = selected
@@ -1699,6 +1774,33 @@ List<dynamic> _subscriptionRows(dynamic payload) {
   }).toList();
 }
 
+Future<List<dynamic>> _withAppleIntroductoryEligibility(
+  List<dynamic> subscriptions,
+) async {
+  if (kIsWeb || !Platform.isIOS || subscriptions.isEmpty) {
+    return subscriptions;
+  }
+  final eligibility = await Purchase.introductoryOfferEligibility(
+    subscriptions.map(_storeProductId),
+  );
+  if (eligibility.isEmpty) {
+    return subscriptions;
+  }
+  return subscriptions.map((item) {
+    if (item is! Map) {
+      return item;
+    }
+    final productId = _storeProductId(item);
+    if (!eligibility.containsKey(productId)) {
+      return item;
+    }
+    return <String, dynamic>{
+      ...Map<String, dynamic>.from(item),
+      '_apple_intro_eligible': eligibility[productId],
+    };
+  }).toList();
+}
+
 List<dynamic> _purchaseRows(dynamic payload) {
   final fromGroupedPayload = payload is Map;
   final rows = fromGroupedPayload ? payload['purchase'] : payload;
@@ -1915,6 +2017,49 @@ String _text(dynamic value) {
     return '';
   }
   return value.toString().trim();
+}
+
+Widget? _paymentDiagnosticsButton(BuildContext context) {
+  if (!PaymentDiagnostics.enabled) {
+    return null;
+  }
+  return SizedBox(
+    width: 40,
+    height: 40,
+    child: IconButton(
+      tooltip: 'Payment logs',
+      padding: EdgeInsets.zero,
+      onPressed: () {
+        unawaited(
+          showPaymentDiagnosticsDialog(
+            context,
+            title: 'Payment diagnostics',
+            summary: 'Manual log view',
+          ),
+        );
+      },
+      icon: const Icon(LucideIcons.bug, size: 20, color: Colors.white),
+    ),
+  );
+}
+
+Future<void> _showPurchaseDiagnostics(
+  BuildContext context, {
+  required bool success,
+}) async {
+  if (!PaymentDiagnostics.enabled ||
+      !context.mounted ||
+      (!success && PaymentDiagnostics.lastFailureCanceled)) {
+    return;
+  }
+  final failure = PaymentDiagnostics.lastFailure;
+  await showPaymentDiagnosticsDialog(
+    context,
+    title: success ? 'Purchase completed' : 'Purchase stopped',
+    summary: success
+        ? 'Backend verification and Apple transaction completion succeeded.'
+        : (failure.isEmpty ? 'The purchase did not complete.' : failure),
+  );
 }
 
 String _rechargeTips() {

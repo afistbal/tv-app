@@ -13,6 +13,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/deep_link_handler.dart';
 import 'package:yogotv/pages/alert.dart';
 import 'package:yogotv/firebase_options.dart' show DefaultFirebaseOptions;
 import 'package:yogotv/global.dart';
@@ -209,8 +210,30 @@ Widget _previewRoute(Widget child) {
   return _WebPreviewFrame(fillHeight: true, child: child);
 }
 
-class App extends StatelessWidget {
+class App extends StatefulWidget {
   const App({super.key});
+
+  @override
+  State<App> createState() => _AppState();
+}
+
+class _AppState extends State<App> {
+  late final DeepLinkHandler _deepLinkHandler;
+
+  @override
+  void initState() {
+    super.initState();
+    _deepLinkHandler = DeepLinkHandler(_router);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_deepLinkHandler.init());
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_deepLinkHandler.dispose());
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -344,8 +367,12 @@ class Main extends StatefulWidget {
 class _Main extends State<Main> {
   final channel = MethodChannel('yogotv.com/channel');
   StreamSubscription<RestartStateValue>? _restartListener;
-  final Set<int> _loadedTabs = {0};
+  Timer? _aliveTimer;
+  final Set<int> _loadedTabs = {0, 1};
   bool _loading = true;
+  bool _appServicesReady = false;
+  bool _appIsForeground = true;
+  bool _aliveRequestInFlight = false;
   // bool _initialized = false;
 
   late final AppLifecycleListener _lifecycleListener;
@@ -353,6 +380,7 @@ class _Main extends State<Main> {
   @override
   void dispose() {
     _restartListener?.cancel();
+    _stopAliveHeartbeat();
     _lifecycleListener.dispose();
     Purchase.dispose();
     super.dispose();
@@ -365,14 +393,20 @@ class _Main extends State<Main> {
     _lifecycleListener = AppLifecycleListener(
       onHide: () {
         Global.logger.d('hide');
+        _appIsForeground = false;
+        _stopAliveHeartbeat();
       },
       onPause: () {
         Global.logger.d('pause');
+        _appIsForeground = false;
+        _stopAliveHeartbeat();
         Global.pause();
       },
       onResume: () {
         Global.logger.d('resume');
+        _appIsForeground = true;
         Global.resume();
+        _startAliveHeartbeat();
         // if (!_initialized || !Global.canShowAd()) {
         //   return;
         // }
@@ -399,6 +433,8 @@ class _Main extends State<Main> {
       }
     });
     if (kIsWeb || Global.webPreview) {
+      _appServicesReady = true;
+      _startAliveHeartbeat();
       setState(() {
         _loading = false;
       });
@@ -410,6 +446,8 @@ class _Main extends State<Main> {
   Future<void> _startAppServices() async {
     await Global.restoreSession(context);
     await Purchase.init();
+    _appServicesReady = true;
+    _startAliveHeartbeat();
     if (mounted) {
       setState(() {
         _loading = false;
@@ -467,6 +505,44 @@ class _Main extends State<Main> {
         .catchError((error) {
           Global.logger.d('tiktok config skipped: $error');
         });
+  }
+
+  void _startAliveHeartbeat() {
+    if (!_appServicesReady || !_appIsForeground) {
+      return;
+    }
+    _aliveTimer?.cancel();
+    unawaited(_pingAlive());
+    _aliveTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_pingAlive());
+    });
+  }
+
+  void _stopAliveHeartbeat() {
+    _aliveTimer?.cancel();
+    _aliveTimer = null;
+  }
+
+  Future<void> _pingAlive() async {
+    if (_aliveRequestInFlight) {
+      return;
+    }
+    _aliveRequestInFlight = true;
+    try {
+      final result = await api<dynamic>(
+        'alive',
+        method: Method.post,
+        loading: false,
+        showError: false,
+      );
+      if (result.c != 0) {
+        Global.logger.d('alive failed c=${result.c} m=${result.m}');
+      }
+    } catch (error) {
+      Global.logger.d('alive failed: $error');
+    } finally {
+      _aliveRequestInFlight = false;
+    }
   }
 
   void _handleChangeIndex(int value) {

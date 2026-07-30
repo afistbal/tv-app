@@ -9,6 +9,16 @@
       "flutterMode": "debug"
     },
     {
+      "name": "YogoShort iOS Payment Debug",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "00008110-000C313E1EB9401E",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define=PAYMENT_DIAGNOSTICS=true"
+      ]
+    },
+    {
       "name": "YogoShort iOS Profile",
       "request": "launch",
       "type": "dart",

@@ -33,9 +33,6 @@ Future<Result<T>> api<T>(
       : webAndroidPreview
       ? 'android'
       : Platform.operatingSystem;
-  final source = webAndroidPreview
-      ? 'A100APPANDROID'
-      : 'A100APP${(webIosPreview || Platform.isIOS) ? 'IOS' : 'ANDROID'}';
   final platform = webAndroidPreview
       ? 'Android'
       : webIosPreview || Platform.isIOS
@@ -52,7 +49,6 @@ Future<Result<T>> api<T>(
     'X-Platform': platform,
     'X-OS': os,
     'X-Test': Global.sp.getString('test') ?? '123456789',
-    'X-Source': source,
     'X-App-Flag': AppConfig.current.flag,
   };
 
@@ -61,14 +57,15 @@ Future<Result<T>> api<T>(
   if (token != '') {
     headers['Authorization'] = 'Bearer $token';
   }
-  final adjustAdid = Global.sp.getString('adjust_adid') ?? '';
-  final adjustAttribution = Global.sp.getString('adjust_attribution') ?? '';
-  if (adjustAdid.isNotEmpty) {
-    headers['X-Adjust-Adid'] = adjustAdid;
-  }
-  if (adjustAttribution.isNotEmpty) {
-    headers['X-Adjust-Attribution'] = adjustAttribution;
-  }
+  final commonParams = await _commonParams();
+  final requestQuery = _withCommonQueryParams(
+    query,
+    commonParams,
+    includeCommonParams: method == Method.get || data is! Map,
+  );
+  final requestData = method == Method.post
+      ? _withCommonDataParams(data, commonParams)
+      : data;
 
   Result result = Result<T>(1, '', null);
 
@@ -82,13 +79,14 @@ Future<Result<T>> api<T>(
     if (method == Method.get) {
       response = await Global.dio.get(
         path,
-        queryParameters: query,
+        queryParameters: requestQuery,
         options: Options(headers: headers),
       );
     } else {
       response = await Global.dio.post(
         path,
-        data: data,
+        data: requestData,
+        queryParameters: requestQuery,
         options: Options(
           headers: {'Content-Type': 'application/json', ...headers},
         ),
@@ -154,4 +152,38 @@ Future<Result<T>> api<T>(
 
 bool _requiresAuth(String path) {
   return !path.startsWith('config') && !path.startsWith('login/');
+}
+
+Future<Map<String, dynamic>> _commonParams() async {
+  if (kIsWeb || Global.webPreview || !Platform.isIOS) {
+    return {};
+  }
+  return {
+    'device_uuid': await Global.deviceUuid(),
+    'package_name': 'com.yogotv.app',
+    'app_version': Global.packageInfo.version,
+    'app_code': Global.packageInfo.buildNumber,
+    'ad_id': Global.sp.getString('adjustId') ?? '',
+  };
+}
+
+Map<String, dynamic>? _withCommonQueryParams(
+  Map<String, dynamic>? value,
+  Map<String, dynamic> commonParams, {
+  required bool includeCommonParams,
+}) {
+  if (!includeCommonParams || commonParams.isEmpty) {
+    return value;
+  }
+  return {...?value, ...commonParams};
+}
+
+Object? _withCommonDataParams(
+  Object? value,
+  Map<String, dynamic> commonParams,
+) {
+  if (commonParams.isEmpty || value is! Map) {
+    return value;
+  }
+  return {...value, ...commonParams};
 }

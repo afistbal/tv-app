@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:bot_toast/bot_toast.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -17,6 +18,7 @@ import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/states/user.dart';
 
 class Global {
@@ -70,12 +72,39 @@ class Global {
     }
 
     packageInfo = await PackageInfo.fromPlatform();
+    await PaymentDiagnostics.initialize(
+      preferences: sp,
+      appVersion: packageInfo.version,
+      buildNumber: packageInfo.buildNumber,
+      flavor: AppConfig.current.flag,
+      apiHost: AppConfig.apiBaseUrl,
+    );
 
-    if (kIsWeb || webPreview) {
+    if (webPreview) {
+      _startWebPreviewSession();
+      return;
+    }
+
+    if (kIsWeb) {
       await _ensureWebPreviewSession();
     }
 
     await refreshConfig();
+  }
+
+  static void _startWebPreviewSession() {
+    unawaited(
+      _ensureWebPreviewSession().timeout(const Duration(seconds: 4)).catchError(
+        (error) {
+          logger.d('web preview session skipped: $error');
+        },
+      ),
+    );
+    unawaited(
+      refreshConfig().timeout(const Duration(seconds: 4)).catchError((error) {
+        logger.d('web preview config skipped: $error');
+      }),
+    );
   }
 
   static Future<void> _resetSessionWhenApiBaseChanged() async {
@@ -341,7 +370,7 @@ class Global {
   }
 
   static void payTrace(String message) {
-    // Payment tracing is intentionally disabled in production builds.
+    PaymentDiagnostics.add(message);
   }
 
   static void authTrace(

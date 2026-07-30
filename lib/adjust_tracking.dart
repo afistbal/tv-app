@@ -16,8 +16,8 @@ class AdjustTracking {
   static const String _purchaseToken = '9xlojg';
   static const String _viewContentToken = '8sgoaw';
 
-  static const String _adidKey = 'adjust_adid';
-  static const String _attributionKey = 'adjust_attribution';
+  static const String _adidKey = 'adjustId';
+  static const String _attributionKey = 'adjustAttrInfo';
   static final Map<String, _PendingCheckout> _pendingCheckouts = {};
   static bool _initialized = false;
 
@@ -63,12 +63,12 @@ class AdjustTracking {
   static String get attributionInfo =>
       Global.sp.getString(_attributionKey) ?? '';
 
+  static Map<String, dynamic> commonParams() {
+    return {'ad_id': adid};
+  }
+
   static Map<String, dynamic> loginParams() {
-    final attr = attributionInfo;
-    return {
-      if (adid.isNotEmpty) 'ad_id': adid,
-      if (attr.isNotEmpty) 'ad_attr_info': attr,
-    };
+    return {...commonParams(), 'ad_attr_info': attributionInfo};
   }
 
   static void trackRegister() {
@@ -157,14 +157,12 @@ class AdjustTracking {
       'creative': attribution.creative,
       'clickLabel': attribution.clickLabel,
       'costType': attribution.costType,
-      'costAmount': attribution.costAmount?.toString(),
+      'costAmount': attribution.costAmount.toString(),
       'costCurrency': attribution.costCurrency,
       'fbInstallReferrer': attribution.fbInstallReferrer,
-    }..removeWhere((_, value) => value == null || value == '');
+    };
 
-    if (data.isNotEmpty) {
-      await Global.sp.setString(_attributionKey, jsonEncode(data));
-    }
+    await Global.sp.setString(_attributionKey, jsonEncode(data));
     try {
       final adid = await Adjust.getAdidWithTimeout(1000);
       if (adid != null && adid.isNotEmpty) {

@@ -9,6 +9,7 @@ import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/states/main.dart';
 import 'package:yogotv/states/user.dart';
 
@@ -43,8 +44,18 @@ class _Profile extends State<Profile> {
     }
   }
 
-  Future<void> _loadData({bool silent = false}) async {
+  Future<void> _loadData({
+    bool silent = false,
+    bool paymentRefresh = false,
+  }) async {
     final requestVersion = ++_balanceRequestVersion;
+    final previousCoins = _coins;
+    if (paymentRefresh) {
+      PaymentDiagnostics.stage(
+        'profile_balance_refresh_started',
+        details: 'before=$previousCoins',
+      );
+    }
     if (!silent && mounted) {
       setState(() => _loading = true);
     }
@@ -64,6 +75,19 @@ class _Profile extends State<Profile> {
     final vip = await vipFuture;
 
     Global.logger.d('[COIN] profile balance c=${balance.c} value=${balance.d}');
+    if (paymentRefresh) {
+      if (balance.c == 0) {
+        PaymentDiagnostics.stage(
+          'profile_balance_refresh_ok',
+          details: 'before=$previousCoins after=${_cleanNumber(balance.d)}',
+        );
+      } else {
+        PaymentDiagnostics.warning(
+          'profile_balance_refresh_rejected',
+          'serverCode=${balance.c} serverMessage=${balance.m}',
+        );
+      }
+    }
 
     if (!mounted || requestVersion != _balanceRequestVersion) {
       return;
@@ -89,6 +113,14 @@ class _Profile extends State<Profile> {
       _vipExpire = _expireText(expire);
       _loading = false;
     });
+  }
+
+  Future<void> _openTopUp() async {
+    final result = await context.push<Object?>('/top-up');
+    if (!mounted || result == null) {
+      return;
+    }
+    await _loadData(silent: true, paymentRefresh: true);
   }
 
   @override
@@ -145,7 +177,7 @@ class _Profile extends State<Profile> {
                           coins: _coins,
                           loading: _loading,
                           onDetails: () => context.push('/wallet'),
-                          onTopUp: () => _openTopUp(context),
+                          onTopUp: _openTopUp,
                         ),
                         SizedBox(height: 12),
                         _MineMenuItem(
@@ -770,10 +802,6 @@ String _cleanNumber(dynamic value) {
 
 void _openMembership(BuildContext context) {
   context.push('/membership');
-}
-
-void _openTopUp(BuildContext context) {
-  context.push('/top-up');
 }
 
 String _expireText(int seconds) {

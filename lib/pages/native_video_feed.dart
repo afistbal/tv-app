@@ -99,6 +99,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   bool _hasMore = true;
   bool _forYouChromeVisible = true;
   int _current = 0;
+  int _nextForYouPage = 2;
   int _syncGeneration = 0;
   Map<String, dynamic>? _series;
   List<dynamic> _episodes = [];
@@ -135,6 +136,8 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     if (widget.active) {
       _syncGeneration++;
       unawaited(_syncWindow(_current, _syncGeneration));
+    } else if (_isForYou && _items.isNotEmpty) {
+      unawaited(_prepareIndex(_current, autoplay: false));
     }
   }
 
@@ -153,7 +156,10 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     }
   }
 
-  Future<void> _loadForYou({bool refresh = false}) async {
+  Future<void> _loadForYou({
+    bool refresh = false,
+    bool requestRefresh = false,
+  }) async {
     if (_loadingMore && !refresh) {
       return;
     }
@@ -164,12 +170,25 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       setState(() => _loadingMore = true);
     }
 
+    final page = refresh ? 1 : _nextForYouPage;
+    final lastEpisodeId = refresh || _items.isEmpty
+        ? null
+        : _items.last['ep_id'];
+    final requestData = <String, dynamic>{
+      if (requestRefresh) 'refresh': 1,
+      if (requestRefresh || !refresh) 'page': page,
+      if (!refresh && lastEpisodeId != null) 'last_ep_id': lastEpisodeId,
+    };
     final result = await api<Map<String, dynamic>>(
       'foryou',
       method: Method.post,
+      data: requestData.isEmpty ? null : requestData,
       loading: false,
     );
-    final rows = _pageRows(result.d);
+    final payload = result.d ?? <String, dynamic>{};
+    final rows = _pageRows(payload);
+    final responsePage = _intValue(payload['current_page']);
+    final hasMore = _inferForYouHasMore(payload, rows.length);
     if (!mounted) {
       return;
     }
@@ -184,7 +203,8 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         _current = 0;
       }
       _items.addAll(rows.map(_normalizeFeedItem));
-      _hasMore = rows.length >= 10;
+      _nextForYouPage = (responsePage > 0 ? responsePage : page) + 1;
+      _hasMore = hasMore;
       _loadingMore = false;
     });
   }
@@ -645,21 +665,48 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       );
       return result.d;
     });
-    Map<String, dynamic>? episode;
-    try {
-      episode = await request;
-    } finally {
-      _videoRequests.remove(key);
+    final episodeVideo = () async {
+      Map<String, dynamic>? episode;
+      try {
+        episode = await request;
+      } finally {
+        _videoRequests.remove(key);
+      }
+      if (episode == null || !mounted || index >= _items.length) {
+        return '';
+      }
+      _applyItemPatch(index, episode);
+      if (notify && mounted) {
+        setState(() {});
+      }
+      return _text(_items[index]['video']);
+    }();
+
+    if (_isForYou || autoUnlock) {
+      return episodeVideo;
     }
-    if (episode == null || !mounted || index >= _items.length) {
-      return '';
+
+    final batchVideo =
+        _preloadEpisodeBatch(
+          index,
+          isVip: context.read<UserState>().isVip,
+          includeCurrent: true,
+        ).then((_) {
+          if (!mounted || index >= _items.length) {
+            return '';
+          }
+          return _text(_items[index]['video']);
+        });
+
+    final firstVideo = await Future.any<String>([episodeVideo, batchVideo]);
+    if (firstVideo.isNotEmpty) {
+      return firstVideo;
     }
-    _applyItemPatch(index, episode);
-    item = _items[index];
-    if (notify && mounted) {
-      setState(() {});
+    final videoFromBatch = await batchVideo;
+    if (videoFromBatch.isNotEmpty) {
+      return videoFromBatch;
     }
-    return _text(item['video']);
+    return episodeVideo;
   }
 
   Future<void> _syncWindow(int index, int generation) async {
@@ -731,7 +778,11 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     return indices;
   }
 
-  Future<void> _preloadEpisodeBatch(int index, {required bool isVip}) async {
+  Future<void> _preloadEpisodeBatch(
+    int index, {
+    required bool isVip,
+    bool includeCurrent = false,
+  }) async {
     if (_isForYou || index < 0 || index >= _items.length) {
       return;
     }
@@ -741,7 +792,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     }
     final ids = <String>[];
     for (final preloadIndex in _batchPreloadIndices(index, isVip: isVip)) {
-      if (preloadIndex == index) {
+      if (!includeCurrent && preloadIndex == index) {
         continue;
       }
       final item = _items[preloadIndex];
@@ -943,7 +994,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
             )
           : RefreshIndicator(
               onRefresh: _isForYou
-                  ? () => _loadForYou(refresh: true)
+                  ? () => _loadForYou(refresh: true, requestRefresh: true)
                   : _loadSeries,
               color: Color(0xffff3d5d),
               backgroundColor: Color(0xff222222),
@@ -4339,6 +4390,24 @@ String _favoriteMovieId(Map<String, dynamic> item) {
 List<dynamic> _pageRows(Map<String, dynamic>? data) {
   final value = data?['data'] ?? data?['list'] ?? data?['items'];
   return value is List ? value : [];
+}
+
+bool _inferForYouHasMore(Map<String, dynamic> data, int rowCount) {
+  final rawHasMore = data['has_more'];
+  if (rawHasMore == true || rawHasMore == 1 || rawHasMore == '1') {
+    return true;
+  }
+  if (rawHasMore == false || rawHasMore == 0 || rawHasMore == '0') {
+    return false;
+  }
+  final perPage = _intValue(data['per_page']);
+  final count = _intValue(data['count']);
+  final batchSize = perPage > 0
+      ? perPage
+      : count > 0
+      ? count
+      : 10;
+  return rowCount > 0 && rowCount >= batchSize;
 }
 
 String _watchToEpisodeId(dynamic watchTo) {

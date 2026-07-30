@@ -6,6 +6,8 @@ import Security
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private let deepLinkStreamHandler = DeepLinkStreamHandler.shared
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -33,8 +35,68 @@ import Security
           result(FlutterMethodNotImplemented)
         }
       }
+
+      let deepLinkChannel = FlutterMethodChannel(
+        name: "yogotv.com/deep_link",
+        binaryMessenger: controller.binaryMessenger
+      )
+      deepLinkChannel.setMethodCallHandler { [weak self] call, result in
+        switch call.method {
+        case "initialLink":
+          result(self?.deepLinkStreamHandler.latestLink)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
+      }
+
+      let deepLinkEvents = FlutterEventChannel(
+        name: "yogotv.com/deep_link/events",
+        binaryMessenger: controller.binaryMessenger
+      )
+      deepLinkEvents.setStreamHandler(deepLinkStreamHandler)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey : Any] = [:]
+  ) -> Bool {
+    if isYogoDeepLink(url) {
+      deepLinkStreamHandler.handle(url.absoluteString)
+      return true
+    }
+    return super.application(app, open: url, options: options)
+  }
+
+  private func isYogoDeepLink(_ url: URL) -> Bool {
+    return url.scheme == Bundle.main.bundleIdentifier
+  }
+}
+
+final class DeepLinkStreamHandler: NSObject, FlutterStreamHandler {
+  static let shared = DeepLinkStreamHandler()
+
+  private var eventSink: FlutterEventSink?
+  private(set) var latestLink: String?
+
+  func handle(_ link: String) {
+    latestLink = link
+    eventSink?(link)
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    eventSink = events
+    if let latestLink {
+      events(latestLink)
+    }
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    eventSink = nil
+    return nil
   }
 }
 

@@ -38,6 +38,7 @@ class _Search extends State<Search> {
   bool _searched = false;
   int _searchGeneration = 0;
   String _requestingKeyword = '';
+  String _lastSearchedKeyword = '';
 
   @override
   void initState() {
@@ -76,6 +77,7 @@ class _Search extends State<Search> {
         _page = 1;
         _searchGeneration++;
         _requestingKeyword = '';
+        _lastSearchedKeyword = '';
       });
       return;
     }
@@ -116,8 +118,20 @@ class _Search extends State<Search> {
     });
   }
 
-  Future<void> _search(String keyword, {required int page}) async {
+  Future<void> _search(
+    String keyword, {
+    required int page,
+    bool force = false,
+  }) async {
     if (keyword.isEmpty || (page > 1 && _requesting)) {
+      return;
+    }
+    if (!force &&
+        page == 1 &&
+        _searched &&
+        !_loading &&
+        !_requesting &&
+        _lastSearchedKeyword.toLowerCase() == keyword.toLowerCase()) {
       return;
     }
     if (page == 1 &&
@@ -138,7 +152,7 @@ class _Search extends State<Search> {
     if (page == 1) {
       await _addHistory(keyword);
       setState(() {
-        _searched = false;
+        _searched = true;
         _loading = true;
         _requesting = true;
         _requestingKeyword = keyword;
@@ -177,6 +191,7 @@ class _Search extends State<Search> {
       _loading = false;
       _requesting = false;
       _requestingKeyword = '';
+      _lastSearchedKeyword = keyword;
       _searched = true;
     });
   }
@@ -377,12 +392,12 @@ class _Search extends State<Search> {
     if (_loading) {
       return ListView(
         physics: AlwaysScrollableScrollPhysics(),
-        children: [SizedBox(height: 40)],
+        children: [SizedBox(height: 40), _SearchLoading()],
       );
     }
     if (_results.isEmpty) {
       return RefreshIndicator(
-        onRefresh: () => _search(_controller.text.trim(), page: 1),
+        onRefresh: () => _search(_controller.text.trim(), page: 1, force: true),
         color: Colors.white,
         backgroundColor: Color(0xff222222),
         child: ListView(
@@ -417,7 +432,7 @@ class _Search extends State<Search> {
       );
     }
     return RefreshIndicator(
-      onRefresh: () => _search(_controller.text.trim(), page: 1),
+      onRefresh: () => _search(_controller.text.trim(), page: 1, force: true),
       color: Colors.white,
       backgroundColor: Color(0xff222222),
       child: ListView.builder(

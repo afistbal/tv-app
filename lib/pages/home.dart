@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -303,6 +304,7 @@ class _MovieGridState extends State<_MovieGrid>
   int _page = 0;
   bool _loading = true;
   bool _requesting = false;
+  bool _refreshAfterCurrentRequest = false;
   bool _more = true;
 
   @override
@@ -315,6 +317,9 @@ class _MovieGridState extends State<_MovieGrid>
       initialScrollOffset: _scrollOffsets[widget.tab] ?? 0,
     );
     _scrollController.addListener(_onScroll);
+    if (widget.tab == 'popular') {
+      _homePopularRefreshSignal.addListener(_onPopularRefreshSignal);
+    }
     final cache = _discoverCache[widget.tab];
     if (cache != null) {
       _items.addAll(cache.items);
@@ -328,6 +333,9 @@ class _MovieGridState extends State<_MovieGrid>
 
   @override
   void dispose() {
+    if (widget.tab == 'popular') {
+      _homePopularRefreshSignal.removeListener(_onPopularRefreshSignal);
+    }
     if (_scrollController.hasClients) {
       _scrollOffsets[widget.tab] = _scrollController.offset;
     }
@@ -344,6 +352,17 @@ class _MovieGridState extends State<_MovieGrid>
     if (position.maxScrollExtent - position.pixels < 480) {
       _load(page: _page + 1);
     }
+  }
+
+  void _onPopularRefreshSignal() {
+    if (!mounted || widget.tab != 'popular') {
+      return;
+    }
+    if (_requesting) {
+      _refreshAfterCurrentRequest = true;
+      return;
+    }
+    unawaited(_refresh());
   }
 
   Future<void> _refresh() async {
@@ -426,6 +445,10 @@ class _MovieGridState extends State<_MovieGrid>
       _loading = false;
       _requesting = false;
     });
+    if (_refreshAfterCurrentRequest) {
+      _refreshAfterCurrentRequest = false;
+      unawaited(_refresh());
+    }
   }
 
   @override
@@ -938,8 +961,18 @@ class _CategoryCache {
 
 final Map<String, _DiscoverCache> _discoverCache = {};
 final Map<String, Future<void>> _discoverPrefetches = {};
+final Map<String, int> _discoverCacheRevisions = {};
 final Map<String, double> _scrollOffsets = {};
+final ValueNotifier<int> _homePopularRefreshSignal = ValueNotifier<int>(0);
 _CategoryCache? _categoryCache;
+
+void refreshHomePopularAfterAttributionSync() {
+  const tab = 'popular';
+  _discoverCacheRevisions[tab] = (_discoverCacheRevisions[tab] ?? 0) + 1;
+  _discoverCache.remove(tab);
+  _discoverPrefetches.remove(tab);
+  _homePopularRefreshSignal.value++;
+}
 
 Future<void> _prefetchMovieGridTab(String tab) {
   if (_discoverCache.containsKey(tab)) {
@@ -950,7 +983,9 @@ Future<void> _prefetchMovieGridTab(String tab) {
     return existing;
   }
 
-  final future =
+  final revision = _discoverCacheRevisions[tab] ?? 0;
+  late final Future<void> future;
+  future =
       api<Map<String, dynamic>>(
             'movie/discover',
             method: Method.post,
@@ -962,6 +997,9 @@ Future<void> _prefetchMovieGridTab(String tab) {
             if (payload == null) {
               return;
             }
+            if ((_discoverCacheRevisions[tab] ?? 0) != revision) {
+              return;
+            }
             final rows = _rowsFromPayload(payload);
             final page = _currentPage(payload, 1);
             _discoverCache[tab] = _DiscoverCache(
@@ -971,7 +1009,9 @@ Future<void> _prefetchMovieGridTab(String tab) {
             );
           })
           .whenComplete(() {
-            _discoverPrefetches.remove(tab);
+            if (identical(_discoverPrefetches[tab], future)) {
+              _discoverPrefetches.remove(tab);
+            }
           });
 
   _discoverPrefetches[tab] = future;

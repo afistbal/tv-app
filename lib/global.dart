@@ -17,6 +17,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
+import 'package:yogotv/from_source_clipboard.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/states/user.dart';
@@ -44,6 +45,8 @@ class Global {
   static const String _avatarUrlKey = 'avatar_url';
   static const String _authProviderKey = 'auth_provider';
   static const String _apiBaseUrlKey = 'api_base_url';
+  static const String _fromSourceKey = 'from_source';
+  static const String _fromSourceSourceAnchorKey = 'from_source_source_anchor';
   static const String _fallbackStaticBase = 'https://cos.yogoshort.com';
 
   static init() async {
@@ -81,7 +84,16 @@ class Global {
     );
 
     if (webPreview) {
-      _startWebPreviewSession();
+      await _ensureWebPreviewSession()
+          .timeout(const Duration(seconds: 8))
+          .catchError((error) {
+            logger.d('web preview session skipped: $error');
+          });
+      unawaited(
+        refreshConfig().timeout(const Duration(seconds: 4)).catchError((error) {
+          logger.d('web preview config skipped: $error');
+        }),
+      );
       return;
     }
 
@@ -90,21 +102,6 @@ class Global {
     }
 
     await refreshConfig();
-  }
-
-  static void _startWebPreviewSession() {
-    unawaited(
-      _ensureWebPreviewSession().timeout(const Duration(seconds: 4)).catchError(
-        (error) {
-          logger.d('web preview session skipped: $error');
-        },
-      ),
-    );
-    unawaited(
-      refreshConfig().timeout(const Duration(seconds: 4)).catchError((error) {
-        logger.d('web preview config skipped: $error');
-      }),
-    );
   }
 
   static Future<void> _resetSessionWhenApiBaseChanged() async {
@@ -131,6 +128,88 @@ class Global {
       logger.d(status);
       tracking = status.isGranted;
       logger.d('Tracking is $tracking');
+    }
+  }
+
+  /// 匿名登录归因：只接受合法落地页 query，并对齐 slot-TV 的覆盖规则。
+  /// query 仅用于校验；请求中的 from_source 始终保留原始字符串格式。
+  static Future<bool> cacheFromSourceCandidate(
+    String? candidate, {
+    required String origin,
+  }) async {
+    if (candidate == null || candidate.trim().isEmpty) {
+      return false;
+    }
+    final incoming = FromSourceClipboardValue.tryParse(candidate);
+    if (incoming == null) {
+      logger.d('from_source ignored invalid $origin payload');
+      return false;
+    }
+
+    final cached = sp.getString(_fromSourceKey) ?? '';
+    final cachedSourceAnchor = sp.getString(_fromSourceSourceAnchorKey) ?? '';
+    final selected = FromSourceClipboardValue.selectForLogin(
+      clipboard: incoming.raw,
+      cached: cached,
+      cachedSourceAnchor: cachedSourceAnchor,
+    );
+    if (selected == null || selected.raw != incoming.raw) {
+      logger.d('from_source kept cached value for $origin');
+      return false;
+    }
+    if (selected.raw == cached) {
+      return false;
+    }
+
+    await sp.setString(_fromSourceKey, selected.raw);
+    if (selected.source.isNotEmpty) {
+      await sp.setString(_fromSourceSourceAnchorKey, selected.source);
+    }
+    logger.d(
+      'from_source replaced from valid $origin length=${selected.raw.length}',
+    );
+    return true;
+  }
+
+  static Future<Map<String, String>> _anonymousFromSourceParams() async {
+    final cached = sp.getString(_fromSourceKey) ?? '';
+    final cachedSourceAnchor = sp.getString(_fromSourceSourceAnchorKey) ?? '';
+    final cachedPayload = FromSourceClipboardValue.selectForLogin(
+      clipboard: null,
+      cached: cached,
+      cachedSourceAnchor: cachedSourceAnchor,
+    );
+    final cachedParams = cachedPayload == null
+        ? <String, String>{}
+        : {_fromSourceKey: cachedPayload.raw};
+    if (kIsWeb || webPreview || defaultTargetPlatform != TargetPlatform.iOS) {
+      return cachedParams;
+    }
+
+    try {
+      final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+      final payload = FromSourceClipboardValue.selectForLogin(
+        clipboard: clipboard?.text,
+        cached: cached,
+        cachedSourceAnchor: cachedSourceAnchor,
+      );
+      if (payload == null) return const <String, String>{};
+      if (payload.raw != cached) {
+        await sp.setString(_fromSourceKey, payload.raw);
+        if (payload.source.isNotEmpty) {
+          await sp.setString(_fromSourceSourceAnchorKey, payload.source);
+        }
+        logger.d(
+          'from_source replaced from valid clipboard length=${payload.raw.length}',
+        );
+      }
+      return {_fromSourceKey: payload.raw};
+    } on PlatformException catch (error) {
+      logger.d('from_source clipboard unavailable: ${error.code}');
+      return cachedParams;
+    } catch (error) {
+      logger.d('from_source clipboard failed: $error');
+      return cachedParams;
     }
   }
 
@@ -172,10 +251,11 @@ class Global {
       }
     }
 
+    final fromSourceParams = await _anonymousFromSourceParams();
     final result = await api<Map<String, dynamic>>(
       'login/anonymous',
       method: Method.post,
-      data: {'device_uuid': deviceUuid},
+      data: {'device_uuid': deviceUuid, ...fromSourceParams},
       loading: false,
       showError: false,
     );
@@ -546,7 +626,9 @@ class Global {
 
       Global.logger.d('${FirebaseAuth.instance.currentUser}');
 
+      var submittedAdjustParams = <String, dynamic>{};
       Future<Result<dynamic>> uidLogin() async {
+        submittedAdjustParams = AdjustTracking.loginParams();
         return await api(
           'login/uid',
           method: Method.post,
@@ -558,7 +640,7 @@ class Global {
                 : 0,
             'name': FirebaseAuth.instance.currentUser?.displayName,
             'email': FirebaseAuth.instance.currentUser?.email,
-            ...AdjustTracking.loginParams(),
+            ...submittedAdjustParams,
           },
         );
       }
@@ -584,6 +666,9 @@ class Global {
         info,
         token: result.d['token']?.toString(),
         avatarUrl: FirebaseAuth.instance.currentUser?.photoURL ?? '',
+      );
+      await AdjustTracking.markTokenAdidSynced(
+        submittedParams: submittedAdjustParams,
       );
 
       if (context.mounted && value != null) {
@@ -612,19 +697,23 @@ class Global {
       }
       Result<Map<String, dynamic>> result;
       if (token.isNotEmpty) {
+        final submittedAdjustParams = AdjustTracking.loginParams();
         result = await api<Map<String, dynamic>>(
           'login/token',
           method: Method.post,
           data: {
             'token': token,
             'device_uuid': deviceUuid,
-            'ad_attr_info': AdjustTracking.attributionInfo,
+            ...submittedAdjustParams,
           },
           loading: false,
           showError: false,
         );
         if (result.c == 0) {
           final value = await cacheUserInfo(result.d);
+          await AdjustTracking.markTokenAdidSynced(
+            submittedParams: submittedAdjustParams,
+          );
           if (context.mounted && value != null) {
             context.read<UserState>().set(value);
           }
@@ -638,12 +727,15 @@ class Global {
       }
 
       while (true) {
+        final submittedAdjustParams = AdjustTracking.loginParams();
+        final fromSourceParams = await _anonymousFromSourceParams();
         result = await api<Map<String, dynamic>>(
           'login/anonymous',
           method: Method.post,
           data: {
             'device_uuid': deviceUuid,
-            'ad_attr_info': AdjustTracking.attributionInfo,
+            ...submittedAdjustParams,
+            ...fromSourceParams,
           },
           loading: false,
           showError: false,
@@ -657,6 +749,9 @@ class Global {
           context.read<UserState>().set(value);
         }
         if (result.c == 0 && value != null) {
+          await AdjustTracking.markTokenAdidSynced(
+            submittedParams: submittedAdjustParams,
+          );
           if (_boolValue(result.d?['is_new'] ?? result.d?['isNew'])) {
             AdjustTracking.trackRegister();
           } else {
@@ -672,6 +767,41 @@ class Global {
     }
   }
 
+  static Future<UserStateValue?> refreshTokenAfterAdjustAdid() async {
+    try {
+      final token = sp.getString('token') ?? '';
+      if (token.isEmpty || AdjustTracking.adid.isEmpty) {
+        return null;
+      }
+      final deviceUuid = await Global.deviceUuid();
+      final submittedAdjustParams = AdjustTracking.loginParams();
+      final result = await api<Map<String, dynamic>>(
+        'login/token',
+        method: Method.post,
+        data: {
+          'token': token,
+          'device_uuid': deviceUuid,
+          ...submittedAdjustParams,
+        },
+        loading: false,
+        showError: false,
+        retryOnAuthFailure: false,
+      );
+      if (result.c == 0) {
+        final value = await cacheUserInfo(result.d);
+        await AdjustTracking.markTokenAdidSynced(
+          submittedParams: submittedAdjustParams,
+        );
+        return value;
+      }
+      logger.d('adjust token refresh failed c=${result.c} m=${result.m}');
+      return null;
+    } on Exception catch (error) {
+      logger.d('adjust token refresh failed: $error');
+      return null;
+    }
+  }
+
   static Future<bool> ensureAnonymousSession({bool force = false}) async {
     try {
       final token = sp.getString('token') ?? '';
@@ -682,12 +812,15 @@ class Global {
         await sp.remove('token');
       }
       final deviceUuid = await Global.deviceUuid();
+      final submittedAdjustParams = AdjustTracking.loginParams();
+      final fromSourceParams = await _anonymousFromSourceParams();
       final result = await api<Map<String, dynamic>>(
         'login/anonymous',
         method: Method.post,
         data: {
           'device_uuid': deviceUuid,
-          'ad_attr_info': AdjustTracking.attributionInfo,
+          ...submittedAdjustParams,
+          ...fromSourceParams,
         },
         loading: false,
         showError: false,
@@ -699,6 +832,9 @@ class Global {
         clearAvatar: true,
       );
       if (result.c == 0 && tokenValue.isNotEmpty && value != null) {
+        await AdjustTracking.markTokenAdidSynced(
+          submittedParams: submittedAdjustParams,
+        );
         return true;
       }
       return false;
@@ -721,6 +857,7 @@ class Global {
         currentUser?.uniqueId,
         sp.getString('unique_id'),
       ]);
+      final submittedAdjustParams = AdjustTracking.loginParams();
       final result = await api<Map<String, dynamic>>(
         'login/signin',
         method: Method.post,
@@ -731,7 +868,7 @@ class Global {
           'name': name.isNotEmpty ? name : (currentUser?.name ?? ''),
           'uid': googleId,
           'provider': 'google',
-          'ad_attr_info': AdjustTracking.attributionInfo,
+          ...submittedAdjustParams,
         },
       );
 
@@ -748,6 +885,9 @@ class Global {
       if (value == null) {
         return false;
       }
+      await AdjustTracking.markTokenAdidSynced(
+        submittedParams: submittedAdjustParams,
+      );
 
       if (context.mounted) {
         context.read<UserState>().set(value);
@@ -813,6 +953,7 @@ class Global {
       if (providerName.isNotEmpty) {
         await sp.setString(providerNameKey, providerName);
       }
+      final submittedAdjustParams = AdjustTracking.loginParams();
       final requestData = <String, dynamic>{
         'anonymous': 0,
         'anonymous_id': anonymousId.isNotEmpty ? anonymousId : null,
@@ -820,7 +961,7 @@ class Global {
         'name': resolvedName,
         'uid': uid,
         'provider': provider,
-        'ad_attr_info': AdjustTracking.attributionInfo,
+        ...submittedAdjustParams,
       };
       authTrace('login.signin.request', requestData);
       final result = await api<Map<String, dynamic>>(
@@ -855,6 +996,9 @@ class Global {
       if (value == null) {
         return false;
       }
+      await AdjustTracking.markTokenAdidSynced(
+        submittedParams: submittedAdjustParams,
+      );
 
       if (context.mounted) {
         context.read<UserState>().set(value);
@@ -877,10 +1021,16 @@ class Global {
   static Future<bool> logout(BuildContext context) async {
     try {
       final deviceUuid = await Global.deviceUuid();
+      final submittedAdjustParams = AdjustTracking.loginParams();
+      final fromSourceParams = await _anonymousFromSourceParams();
       final result = await api<Map<String, dynamic>>(
         'login/anonymous',
         method: Method.post,
-        data: {'device_uuid': deviceUuid, ...AdjustTracking.loginParams()},
+        data: {
+          'device_uuid': deviceUuid,
+          ...submittedAdjustParams,
+          ...fromSourceParams,
+        },
         loading: false,
       );
       final token = result.d?['token']?.toString() ?? '';
@@ -892,6 +1042,9 @@ class Global {
       if (result.c != 0 || token.isEmpty || value == null) {
         return false;
       }
+      await AdjustTracking.markTokenAdidSynced(
+        submittedParams: submittedAdjustParams,
+      );
       if (context.mounted) {
         context.read<UserState>().set(value);
       }

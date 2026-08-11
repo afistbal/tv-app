@@ -162,7 +162,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     final expire = _membershipExpire(vipPayload);
     final isVip =
         _membershipIsActive(vipPayload) || context.read<UserState>().isVip;
-    final subscriptions = products;
+    final subscriptions = _withCachedAppleIntroductoryEligibility(products);
     final vipVideos = videos?.c == 0
         ? _membershipRows(videos?.d).take(6).toList()
         : _vipVideos;
@@ -251,6 +251,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
     final price = double.tryParse(_text(product['price'])) ?? 0;
     if (_applePayMode) {
       final storeProductId = _storeProductId(product);
+      final priceType = await Purchase.introductoryPriceType(storeProductId);
       await _trackCheckout(storeProductId: storeProductId, price: price);
       Global.payTrace('membership subscribe call IAP');
       if (Global.webPreview) {
@@ -258,6 +259,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
           localProductId: _productId(product),
           appleProductId: storeProductId,
           type: 1,
+          priceType: priceType,
         );
         Global.payTrace('membership preview create returned=$result');
         if (mounted) {
@@ -269,6 +271,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
         localProductId: _productId(product),
         appleProductId: storeProductId,
         type: 1,
+        priceType: priceType,
       );
       Global.payTrace('membership IAP returned=$result');
       if (!result) {
@@ -318,6 +321,15 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
       _restore = true;
       Global.success(t.success);
     }
+  }
+
+  Future<void> _handleSubscriptionTap(dynamic product) async {
+    final productId = _productId(product);
+    if (productId.isEmpty) {
+      return;
+    }
+    setState(() => _selectedId = productId);
+    await _handleSubscribe();
   }
 
   dynamic _selectedSubscription() {
@@ -400,11 +412,9 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                                         item: item,
                                         selected:
                                             _productId(item) == _selectedId,
-                                        onTap: () {
-                                          setState(() {
-                                            _selectedId = _productId(item);
-                                          });
-                                        },
+                                        onTap: () => unawaited(
+                                          _handleSubscriptionTap(item),
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -431,12 +441,6 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Padding(
-                                  padding: EdgeInsets.fromLTRB(15, 12, 15, 0),
-                                  child: _SubscribeButton(
-                                    onTap: _handleSubscribe,
-                                  ),
-                                ),
                                 Padding(
                                   padding: EdgeInsets.symmetric(
                                     horizontal: 15,
@@ -546,7 +550,9 @@ class _VipPaySheetState extends State<_VipPaySheet> {
       final expireMillis = int.tryParse('${vip.d!['vip_expire_at'] ?? 0}') ?? 0;
       context.read<UserState>().setVip(expireMillis > 0 ? 1 : 0);
     }
-    final subscriptions = _subscriptionRows(products.d);
+    final subscriptions = _withCachedAppleIntroductoryEligibility(
+      _subscriptionRows(products.d),
+    );
     final coins = _purchaseRows(products.d);
     if (!mounted) {
       return;
@@ -583,15 +589,19 @@ class _VipPaySheetState extends State<_VipPaySheet> {
     final price = double.tryParse(_text(product['price'])) ?? 0;
     final storeProductId = _storeProductId(product);
     if (_applePayMode) {
-      await _trackCheckout(storeProductId: storeProductId, price: price);
-      Global.payTrace('sheet pay call IAP result=${_payResultFor(product)}');
       final payResult = _payResultFor(product);
       final type = payResult == VipPayResult.coins ? 2 : 1;
+      final priceType = type == 1
+          ? await Purchase.introductoryPriceType(storeProductId)
+          : 0;
+      await _trackCheckout(storeProductId: storeProductId, price: price);
+      Global.payTrace('sheet pay call IAP result=$payResult');
       if (Global.webPreview) {
         final result = await Purchase.previewCreate(
           localProductId: _productId(product),
           appleProductId: storeProductId,
           type: type,
+          priceType: priceType,
         );
         Global.payTrace('sheet preview create returned=$result');
         return;
@@ -600,6 +610,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
         localProductId: _productId(product),
         appleProductId: storeProductId,
         type: type,
+        priceType: priceType,
       );
       Global.payTrace('sheet IAP returned=$result');
       if (!result) {
@@ -1677,42 +1688,6 @@ class _RechargeTips extends StatelessWidget {
   }
 }
 
-class _SubscribeButton extends StatelessWidget {
-  const _SubscribeButton({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Ink(
-          height: 44,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xffffecd4), Color(0xfff3cb93)],
-            ),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Center(
-            child: Text(
-              t.subscribe,
-              style: TextStyle(
-                color: Color(0xff633e25),
-                fontSize: 17,
-                fontWeight: FontWeight.w400,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 String _userName(UserState user) {
   if (user.state == null || user.state!.anonymous == 1) {
     return t.guest;
@@ -1786,6 +1761,28 @@ Future<List<dynamic>> _withAppleIntroductoryEligibility(
   if (eligibility.isEmpty) {
     return subscriptions;
   }
+  return _applyAppleIntroductoryEligibility(subscriptions, eligibility);
+}
+
+List<dynamic> _withCachedAppleIntroductoryEligibility(
+  List<dynamic> subscriptions,
+) {
+  if (kIsWeb || !Platform.isIOS || subscriptions.isEmpty) {
+    return subscriptions;
+  }
+  final eligibility = Purchase.cachedIntroductoryOfferEligibility(
+    subscriptions.map(_storeProductId),
+  );
+  if (eligibility.isEmpty) {
+    return subscriptions;
+  }
+  return _applyAppleIntroductoryEligibility(subscriptions, eligibility);
+}
+
+List<dynamic> _applyAppleIntroductoryEligibility(
+  List<dynamic> subscriptions,
+  Map<String, bool> eligibility,
+) {
   return subscriptions.map((item) {
     if (item is! Map) {
       return item;

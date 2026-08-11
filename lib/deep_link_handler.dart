@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
+import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/global.dart';
 
 class DeepLinkHandler {
@@ -16,9 +19,17 @@ class DeepLinkHandler {
 
   final GoRouter _router;
   StreamSubscription<dynamic>? _subscription;
+  StreamSubscription<String>? _adjustSubscription;
   String? _lastHandledLink;
+  DateTime? _lastHandledAt;
+
+  static const Duration _duplicateLinkWindow = Duration(seconds: 1);
 
   Future<void> init() async {
+    if (kIsWeb) {
+      return;
+    }
+
     try {
       final initialLink = await _methodChannel.invokeMethod<String>(
         'initialLink',
@@ -34,16 +45,29 @@ class DeepLinkHandler {
         Global.logger.d('deep link stream failed: $error');
       },
     );
+    _adjustSubscription = AdjustTracking.deepLinkUpdates.listen((link) {
+      final pending = AdjustTracking.takePendingDeepLink();
+      _handleLink(pending.isNotEmpty ? pending : link);
+    });
+    _handleLink(AdjustTracking.takePendingDeepLink());
   }
 
   Future<void> dispose() async {
     await _subscription?.cancel();
+    await _adjustSubscription?.cancel();
     _subscription = null;
+    _adjustSubscription = null;
   }
 
   void _handleLink(String? rawLink) {
     final link = rawLink?.trim();
-    if (link == null || link.isEmpty || link == _lastHandledLink) {
+    if (link == null || link.isEmpty) {
+      return;
+    }
+    final now = DateTime.now();
+    if (link == _lastHandledLink &&
+        _lastHandledAt != null &&
+        now.difference(_lastHandledAt!) < _duplicateLinkWindow) {
       return;
     }
     final uri = Uri.tryParse(link);
@@ -65,21 +89,33 @@ class DeepLinkHandler {
     ]);
 
     _lastHandledLink = link;
+    _lastHandledAt = now;
+    unawaited(AdjustTracking.recordDeepLink(link));
     Global.logger.d('deep link open movie=$movieId episode=$episodeNum');
-    _router.go(
-      '/play',
-      extra: {
-        'id': movieId,
-        'watchTo': {
-          if (episodeNum != null && episodeNum > 0) 'episode': episodeNum,
-        },
+    final playExtra = {
+      'id': movieId,
+      'openId': now.microsecondsSinceEpoch,
+      'source': 'deep_link',
+      'watchTo': {
+        if (episodeNum != null && episodeNum > 0) 'episode': episodeNum,
       },
-    );
+    };
+    _router.go('/');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_router.push<void>('/play', extra: playExtra));
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   bool _isSupportedUri(Uri uri) {
     final scheme = uri.scheme.toLowerCase();
     if (scheme == 'com.yogotv.app') {
+      return true;
+    }
+    if (scheme == 'https' &&
+        (uri.host.toLowerCase() == 'yogoshort.com' ||
+            uri.host.toLowerCase() == 'www.yogoshort.com') &&
+        (uri.path == '/open' || uri.path.startsWith('/open/'))) {
       return true;
     }
     return scheme == 'open' &&

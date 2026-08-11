@@ -25,7 +25,9 @@ class Purchase {
   static final Set<String> _attemptedBackgroundTransactions = {};
   static final Set<String> _finishedTransactions = {};
   static final Map<String, Future<_PurchaseResult>> _transactionTasks = {};
+  static final Map<String, bool> _introEligibilityCache = {};
   static Future<bool>? _backgroundRecovery;
+  static final Map<String, Future<void>> _introEligibilityPreloads = {};
   static Completer<bool>? _restoreCompleter;
 
   static Future<void> init() async {
@@ -482,6 +484,7 @@ class Purchase {
     required dynamic localProductId,
     required String appleProductId,
     required int type,
+    int priceType = 0,
   }) async {
     PaymentDiagnostics.beginAttempt(
       localProductId: '$localProductId',
@@ -535,7 +538,10 @@ class Purchase {
 
       await Global.ensureAnonymousSession();
       PaymentDiagnostics.stage('create_started');
-      final createPayload = {'product_id': localProductId};
+      final createPayload = {
+        'product_id': localProductId,
+        'price_type': priceType,
+      };
       final authToken = Global.sp.getString('token') ?? '';
       Global.payTrace(
         'applePay/create Authorization=${authToken.isEmpty ? '(empty)' : 'present length=${authToken.length}'}',
@@ -819,11 +825,15 @@ class Purchase {
     required dynamic localProductId,
     required String appleProductId,
     required int type,
+    int priceType = 0,
   }) async {
     Global.payTrace(
       'web preview start localProductId=$localProductId appleProductId=$appleProductId type=$type',
     );
-    final createPayload = {'product_id': localProductId};
+    final createPayload = {
+      'product_id': localProductId,
+      'price_type': priceType,
+    };
     Global.payTrace('applePay/create request ${jsonEncode(createPayload)}');
     final order = await api<Map<String, dynamic>>(
       'applePay/create',
@@ -881,6 +891,102 @@ class Purchase {
     }
   }
 
+  static Map<String, bool> cachedIntroductoryOfferEligibility(
+    Iterable<String> productIds,
+  ) {
+    final ids = productIds.where((id) => id.trim().isNotEmpty).toSet();
+    if (ids.isEmpty || _introEligibilityCache.isEmpty) {
+      return const {};
+    }
+    final result = <String, bool>{};
+    for (final id in ids) {
+      final value = _introEligibilityCache[id];
+      if (value != null) {
+        result[id] = value;
+      }
+    }
+    return result;
+  }
+
+  static Future<void> preloadMembershipIntroductoryOfferEligibility() {
+    return _preloadIntroductoryOfferEligibility(
+      key: 'membership',
+      requestData: const {},
+    );
+  }
+
+  static Future<void> preloadRetentionIntroductoryOfferEligibility() {
+    return _preloadIntroductoryOfferEligibility(
+      key: 'retention',
+      requestData: const {'price_type': 1},
+    );
+  }
+
+  static Future<void> _preloadIntroductoryOfferEligibility({
+    required String key,
+    required Map<String, dynamic> requestData,
+  }) {
+    if (kIsWeb || !Platform.isIOS) {
+      return Future.value();
+    }
+    final current = _introEligibilityPreloads[key];
+    if (current != null) {
+      return current;
+    }
+    final task = _preloadIntroductoryOfferEligibilityProducts(
+      key: key,
+      requestData: requestData,
+    );
+    _introEligibilityPreloads[key] = task;
+    return task.whenComplete(() {
+      if (identical(_introEligibilityPreloads[key], task)) {
+        _introEligibilityPreloads.remove(key);
+      }
+    });
+  }
+
+  static Future<void> _preloadIntroductoryOfferEligibilityProducts({
+    required String key,
+    required Map<String, dynamic> requestData,
+  }) async {
+    try {
+      await Global.ensureAnonymousSession();
+      var products = await api<dynamic>(
+        'applePay/products',
+        method: Method.post,
+        data: requestData,
+        loading: false,
+        showError: false,
+      );
+      if (products.m == 'Authentication Failure.') {
+        await Global.ensureAnonymousSession(force: true);
+        products = await api<dynamic>(
+          'applePay/products',
+          method: Method.post,
+          data: requestData,
+          loading: false,
+          showError: false,
+        );
+      }
+      if (products.c != 0) {
+        Global.payTrace(
+          'StoreKit intro preload products rejected c=${products.c} m=${products.m}',
+        );
+        return;
+      }
+      final ids = _appleSubscriptionProductIds(products.d).toSet();
+      if (ids.isEmpty) {
+        return;
+      }
+      Global.payTrace('StoreKit intro preload key=$key ids=$ids');
+      await warmUpProductDetails(ids);
+      final eligibility = await introductoryOfferEligibility(ids);
+      Global.payTrace('StoreKit intro preload key=$key result=$eligibility');
+    } on Exception catch (error) {
+      Global.payTrace('StoreKit intro preload key=$key failed error=$error');
+    }
+  }
+
   static Future<Map<String, bool>> introductoryOfferEligibility(
     Iterable<String> productIds,
   ) async {
@@ -916,11 +1022,19 @@ class Purchase {
         }
       }
       Global.payTrace('StoreKit introductory eligibility $eligibility');
+      if (eligibility.isNotEmpty) {
+        _introEligibilityCache.addAll(eligibility);
+      }
       return eligibility;
     } on Exception catch (error) {
       Global.payTrace('StoreKit introductory offers query failed error=$error');
       return const {};
     }
+  }
+
+  static Future<int> introductoryPriceType(String productId) async {
+    final eligibility = await introductoryOfferEligibility([productId]);
+    return eligibility[productId] == true ? 1 : 0;
   }
 
   static Future<bool> _waitForStoreAvailability() async {
@@ -1171,6 +1285,41 @@ String _firstNotEmpty(Iterable<dynamic> values) {
     }
   }
   return '';
+}
+
+Iterable<String> _appleSubscriptionProductIds(dynamic payload) sync* {
+  final rows = _appleSubscriptionRows(payload);
+  for (final item in rows) {
+    if (item is! Map) {
+      continue;
+    }
+    final id = _firstNotEmpty([
+      item['apple_product_id'],
+      item['product_id'],
+      item['ios_product_id'],
+      item['store_product_id'],
+      item['google_product_id'],
+      item['googleProductId'],
+    ]);
+    if (id.isNotEmpty) {
+      yield id;
+    }
+  }
+}
+
+List<dynamic> _appleSubscriptionRows(dynamic payload) {
+  if (payload is List) {
+    return payload;
+  }
+  if (payload is! Map) {
+    return const [];
+  }
+  final subscription = payload['subscription'];
+  if (subscription is List) {
+    return subscription;
+  }
+  final products = payload['products'] ?? payload['list'] ?? payload['items'];
+  return products is List ? products : const [];
 }
 
 class _PurchaseResult {

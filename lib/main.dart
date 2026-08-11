@@ -52,10 +52,6 @@ Future main() async {
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
   await Global.init();
-  unawaited(() async {
-    await Global.initTracking();
-    await AdjustTracking.init();
-  }());
   final savedLocale = Global.sp.getString('locale');
   if (savedLocale == null) {
     await LocaleSettings.setLocale(AppLocale.en);
@@ -69,6 +65,36 @@ Future main() async {
   }
 
   runApp(TranslationProvider(child: App()));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_initTrackingAfterAppBecomesActive());
+  });
+}
+
+Future<void> _initTrackingAfterAppBecomesActive() async {
+  if (!kIsWeb &&
+      WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+    final resumed = Completer<void>();
+    late final AppLifecycleListener listener;
+    listener = AppLifecycleListener(
+      onResume: () {
+        if (!resumed.isCompleted) {
+          resumed.complete();
+        }
+      },
+    );
+    try {
+      await resumed.future.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      Global.logger.d(
+        'Timed out waiting for the app to become active before ATT',
+      );
+    } finally {
+      listener.dispose();
+    }
+  }
+
+  await Global.initTracking();
+  await AdjustTracking.init();
 }
 
 final _router = GoRouter(
@@ -94,7 +120,11 @@ final _router = GoRouter(
       path: '/play',
       builder: (context, state) {
         final data = state.extra as Map<String, dynamic>;
-        return Play(id: data['id'], watchTo: data['watchTo']);
+        return Play(
+          key: ValueKey(data['openId'] ?? state.pageKey),
+          id: data['id'],
+          watchTo: data['watchTo'],
+        );
       },
     ),
     GoRoute(
@@ -261,7 +291,7 @@ class _AppState extends State<App> {
         scrollBehavior: const _YogoScrollBehavior(),
         builder: (context, child) {
           child = BotToastInit()(context, child);
-          return child;
+          return _AppViewportFrame(fillHeight: true, child: child);
         },
         theme: ThemeData(
           splashColor: Color(0x05ffffff),
@@ -367,12 +397,16 @@ class Main extends StatefulWidget {
 class _Main extends State<Main> {
   final channel = MethodChannel('yogotv.com/channel');
   StreamSubscription<RestartStateValue>? _restartListener;
+  StreamSubscription<void>? _adjustAttributionListener;
   Timer? _aliveTimer;
   final Set<int> _loadedTabs = {0, 1};
   bool _loading = true;
   bool _appServicesReady = false;
   bool _appIsForeground = true;
   bool _aliveRequestInFlight = false;
+  bool _adjustTokenRefreshInFlight = false;
+  bool _adjustTokenRefreshPending = false;
+  bool _adjustAttributionPollingStarted = false;
   // bool _initialized = false;
 
   late final AppLifecycleListener _lifecycleListener;
@@ -380,6 +414,7 @@ class _Main extends State<Main> {
   @override
   void dispose() {
     _restartListener?.cancel();
+    _adjustAttributionListener?.cancel();
     _stopAliveHeartbeat();
     _lifecycleListener.dispose();
     Purchase.dispose();
@@ -407,6 +442,7 @@ class _Main extends State<Main> {
         _appIsForeground = true;
         Global.resume();
         _startAliveHeartbeat();
+        unawaited(_refreshAdjustAttributionFromSdk());
         // if (!_initialized || !Global.canShowAd()) {
         //   return;
         // }
@@ -432,6 +468,9 @@ class _Main extends State<Main> {
         context.pop();
       }
     });
+    _adjustAttributionListener = AdjustTracking.attributionUpdates.listen((_) {
+      unawaited(_refreshTokenAfterAdjustAttribution());
+    });
     if (kIsWeb || Global.webPreview) {
       _appServicesReady = true;
       _startAliveHeartbeat();
@@ -444,8 +483,25 @@ class _Main extends State<Main> {
   }
 
   Future<void> _startAppServices() async {
+    await AdjustTracking.waitForAdid(timeout: const Duration(seconds: 3));
+    await AdjustTracking.waitForAttribution(
+      timeout: const Duration(seconds: 3),
+    );
+    if (!mounted) {
+      return;
+    }
     await Global.restoreSession(context);
+    if (!mounted) {
+      return;
+    }
+    unawaited(_refreshTokenAfterAdjustAttribution());
+    unawaited(_pollAdjustAttributionUntilResolved());
+    final shouldPreloadIntroEligibility = !context.read<UserState>().isVip;
     await Purchase.init();
+    if (shouldPreloadIntroEligibility) {
+      unawaited(Purchase.preloadMembershipIntroductoryOfferEligibility());
+      unawaited(Purchase.preloadRetentionIntroductoryOfferEligibility());
+    }
     _appServicesReady = true;
     _startAliveHeartbeat();
     if (mounted) {
@@ -505,6 +561,89 @@ class _Main extends State<Main> {
         .catchError((error) {
           Global.logger.d('tiktok config skipped: $error');
         });
+  }
+
+  Future<void> _refreshTokenAfterAdjustAttribution() async {
+    if (kIsWeb || Global.webPreview) {
+      return;
+    }
+    _adjustTokenRefreshPending = true;
+    if (_adjustTokenRefreshInFlight) {
+      return;
+    }
+    _adjustTokenRefreshInFlight = true;
+    try {
+      while (_adjustTokenRefreshPending && mounted) {
+        _adjustTokenRefreshPending = false;
+        Global.logger.d('adjust token sync waiting for attribution');
+        final hasAdid = await AdjustTracking.waitForAdid(
+          timeout: const Duration(seconds: 3),
+        );
+        await AdjustTracking.waitForAttribution(
+          timeout: const Duration(seconds: 3),
+        );
+        final shouldSync =
+            hasAdid &&
+            mounted &&
+            AdjustTracking.shouldRefreshTokenForCurrentAdid;
+        if (!shouldSync) {
+          Global.logger.d(
+            'adjust token sync skipped hasAdid=$hasAdid mounted=$mounted shouldSync=$shouldSync',
+          );
+          continue;
+        }
+        final value = await Global.refreshTokenAfterAdjustAdid();
+        if (!mounted || value == null) {
+          Global.logger.d('adjust token sync finished without user update');
+          continue;
+        }
+        Global.logger.d('adjust token sync applied');
+        context.read<UserState>().set(value);
+        if (context.read<MainState>().state.current == 0) {
+          refreshHomePopularAfterAttributionSync();
+        }
+      }
+    } finally {
+      _adjustTokenRefreshInFlight = false;
+      if (_adjustTokenRefreshPending && mounted) {
+        unawaited(_refreshTokenAfterAdjustAttribution());
+      }
+    }
+  }
+
+  Future<void> _refreshAdjustAttributionFromSdk() async {
+    await AdjustTracking.refreshAttribution();
+    if (!mounted) {
+      return;
+    }
+    await _refreshTokenAfterAdjustAttribution();
+  }
+
+  Future<void> _pollAdjustAttributionUntilResolved() async {
+    if (_adjustAttributionPollingStarted) {
+      return;
+    }
+    _adjustAttributionPollingStarted = true;
+    const retryDelays = <Duration>[
+      Duration(seconds: 5),
+      Duration(seconds: 15),
+      Duration(seconds: 30),
+      Duration(minutes: 1),
+      Duration(minutes: 2),
+      Duration(minutes: 5),
+      Duration(minutes: 10),
+      Duration(minutes: 15),
+    ];
+    for (final delay in retryDelays) {
+      if (!mounted || !AdjustTracking.attributionNeedsRefresh) {
+        return;
+      }
+      await Future<void>.delayed(delay);
+      if (!mounted) {
+        return;
+      }
+      await _refreshAdjustAttributionFromSdk();
+    }
   }
 
   void _startAliveHeartbeat() {
@@ -568,7 +707,7 @@ class _Main extends State<Main> {
           : BlocBuilder<MainState, MainStateValue>(
               builder: (context, state) {
                 return Scaffold(
-                  body: _WebPreviewFrame(
+                  body: _AppViewportFrame(
                     fillHeight: true,
                     child: IndexedStack(
                       index: state.current,
@@ -586,7 +725,7 @@ class _Main extends State<Main> {
                       ],
                     ),
                   ),
-                  bottomNavigationBar: _WebPreviewFrame(
+                  bottomNavigationBar: _AppViewportFrame(
                     child: _MainBottomNavigation(
                       currentIndex: state.current,
                       onTap: _handleChangeIndex,
@@ -683,6 +822,44 @@ class _BottomTabIcon extends StatelessWidget {
   }
 }
 
+class _AppViewportFrame extends StatelessWidget {
+  const _AppViewportFrame({required this.child, this.fillHeight = false});
+
+  static const double maxWidth = 480.0;
+
+  final Widget child;
+  final bool fillHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.maybeOf(context);
+    if (media == null || media.size.width <= maxWidth) {
+      return child;
+    }
+
+    final framedMedia = media.copyWith(size: Size(maxWidth, media.size.height));
+
+    final framed = MediaQuery(
+      data: framedMedia,
+      child: SizedBox(
+        width: maxWidth,
+        height: fillHeight ? media.size.height : null,
+        child: child,
+      ),
+    );
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Align(
+        alignment: fillHeight ? Alignment.topCenter : Alignment.center,
+        widthFactor: fillHeight ? null : 1,
+        heightFactor: fillHeight ? null : 1,
+        child: framed,
+      ),
+    );
+  }
+}
+
 class _WebPreviewFrame extends StatelessWidget {
   const _WebPreviewFrame({required this.child, this.fillHeight = false});
 
@@ -696,7 +873,9 @@ class _WebPreviewFrame extends StatelessWidget {
     }
 
     final size = MediaQuery.sizeOf(context);
-    final width = size.width > 480 ? 480.0 : size.width;
+    final width = size.width > _AppViewportFrame.maxWidth
+        ? _AppViewportFrame.maxWidth
+        : size.width;
     final framed = SizedBox(width: width, child: child);
 
     if (!fillHeight) {

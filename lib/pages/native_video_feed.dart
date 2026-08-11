@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:dio/dio.dart';
@@ -9,15 +10,18 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:tiktok_events_sdk/tiktok_events_sdk.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
 import 'package:yogotv/pages/membership.dart';
+import 'package:yogotv/purchase.dart';
 import 'package:yogotv/states/user.dart';
 import 'package:yogotv/video_playback_session.dart';
 
@@ -144,6 +148,12 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   @override
   void didUpdateWidget(covariant NativeVideoFeed oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_routeTargetChanged(oldWidget)) {
+      _syncGeneration++;
+      unawaited(_suspendPlayback());
+      unawaited(_loadInitial());
+      return;
+    }
     if (oldWidget.active == widget.active) {
       return;
     }
@@ -154,6 +164,12 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       _syncGeneration++;
       unawaited(_suspendPlayback());
     }
+  }
+
+  bool _routeTargetChanged(NativeVideoFeed oldWidget) {
+    return oldWidget.scene != widget.scene ||
+        oldWidget.movieId != widget.movieId ||
+        _watchToRouteKey(oldWidget.watchTo) != _watchToRouteKey(widget.watchTo);
   }
 
   Future<void> _loadForYou({
@@ -179,14 +195,29 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       if (requestRefresh || !refresh) 'page': page,
       if (!refresh && lastEpisodeId != null) 'last_ep_id': lastEpisodeId,
     };
-    final result = await api<Map<String, dynamic>>(
+    var result = await api<Map<String, dynamic>>(
       'foryou',
       method: Method.post,
       data: requestData.isEmpty ? null : requestData,
       loading: false,
     );
-    final payload = result.d ?? <String, dynamic>{};
-    final rows = _pageRows(payload);
+    var payload = result.d ?? <String, dynamic>{};
+    var rows = _pageRows(payload);
+    if (refresh && rows.isEmpty) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted) {
+        return;
+      }
+      await Global.ensureAnonymousSession();
+      result = await api<Map<String, dynamic>>(
+        'foryou',
+        method: Method.post,
+        data: requestData.isEmpty ? null : requestData,
+        loading: false,
+      );
+      payload = result.d ?? <String, dynamic>{};
+      rows = _pageRows(payload);
+    }
     final responsePage = _intValue(payload['current_page']);
     final hasMore = _inferForYouHasMore(payload, rows.length);
     if (!mounted) {
@@ -1212,13 +1243,18 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   bool _showProgressText = false;
   bool _isSeeking = false;
   bool _appliedInitialPosition = false;
+  bool _videoPaySheetOpen = false;
   String _captionText = '';
   double _speed = 1;
   double? _dragFraction;
   int _positionSeconds = 0;
+  Future<List<_VideoRetentionOffer>>? _retentionOffersFuture;
+  Future<List<_VideoRetentionCover>>? _retentionCoversFuture;
 
   bool get _isForYou => widget.scene == NativeVideoScene.forYou;
   bool get _isEpisode => widget.scene == NativeVideoScene.episode;
+  bool get _appleRetentionMode =>
+      Global.webPreview || (!kIsWeb && Platform.isIOS);
 
   @override
   void initState() {
@@ -1226,6 +1262,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     _syncController(null, widget.controller);
     if (widget.active) {
       _ensureVideoReady();
+      _warmVideoRetentionOffersAfterFrame();
     }
   }
 
@@ -1244,10 +1281,19 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       _centerButtonVisibleByTap = false;
       _userPaused = false;
       _ensureVideoReady();
+      _warmVideoRetentionOffersAfterFrame();
     } else if (!widget.active && oldWidget.active) {
       _pause();
     }
     _syncLockedOverlayEntry();
+  }
+
+  void _closeEpisodePage() {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/');
   }
 
   void _resetLockedStateForNewItem() {
@@ -1302,7 +1348,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
           child: _LockedOverlay(
             onBack: () {
               if (mounted) {
-                context.pop();
+                _closeEpisodePage();
               }
             },
             onGetVip: _openVipPayFromOverlay,
@@ -2204,7 +2250,12 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   }
 
   Future<void> _showTopUpAndVerify(int unlockCoins) async {
+    if (_videoPaySheetOpen) {
+      return;
+    }
     Global.payTrace('video open pay sheet unlockCoins=$unlockCoins');
+    _videoPaySheetOpen = true;
+    final retentionOffersFuture = _prefetchVideoRetentionOffers();
     _suspendLockedOverlayEntry();
     VipPayResult? payResult;
     try {
@@ -2212,30 +2263,366 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
         context,
         episodeCoins: unlockCoins.toString(),
       );
+      if (!mounted || !widget.active) {
+        return;
+      }
+      if (payResult == null) {
+        Global.payTrace('video pay sheet cancelled');
+        final handledRetention = await _runVideoRetentionOffers(
+          unlockCoins,
+          retentionOffersFuture,
+        );
+        if (!handledRetention) {
+          _restoreLockedOverlayIfStillLocked();
+        }
+        return;
+      }
+      Global.payTrace('video pay sheet result=$payResult');
+      await _verifyPendingUnlockAfterTopUp(unlockCoins, payResult);
     } finally {
+      _videoPaySheetOpen = false;
       if (mounted) {
         _resumeLockedOverlayEntry();
       }
+    }
+  }
+
+  void _openVipPayFromAction() {
+    unawaited(_openVipPayFromActionFlow());
+  }
+
+  Future<void> _openVipPayFromActionFlow() async {
+    if (_videoPaySheetOpen) {
+      return;
+    }
+    _videoPaySheetOpen = true;
+    final unlockCoins = _unlockCoinsFrom(widget.item);
+    final retentionOffersFuture = _prefetchVideoRetentionOffers();
+    VipPayResult? payResult;
+    try {
+      payResult = await showVipPayBottomSheet(
+        context,
+        episodeCoins: unlockCoins.toString(),
+      );
+    } finally {
+      _videoPaySheetOpen = false;
     }
     if (!mounted || !widget.active) {
       return;
     }
     if (payResult == null) {
-      Global.payTrace('video pay sheet cancelled');
-      _restoreLockedOverlayIfStillLocked();
+      Global.payTrace('video action pay sheet cancelled');
+      await _runVideoRetentionOffers(unlockCoins, retentionOffersFuture);
       return;
     }
-    Global.payTrace('video pay sheet result=$payResult');
+    Global.payTrace('video action pay sheet result=$payResult');
     await _verifyPendingUnlockAfterTopUp(unlockCoins, payResult);
   }
 
-  void _openVipPayFromAction() {
+  Future<List<_VideoRetentionOffer>> _prefetchVideoRetentionOffers() {
+    return _prefetchVideoRetentionOffersInternal();
+  }
+
+  void _warmVideoRetentionOffersAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.active) {
+        return;
+      }
+      unawaited(_prefetchVideoRetentionOffersInternal());
+    });
+  }
+
+  Future<List<_VideoRetentionOffer>> _prefetchVideoRetentionOffersInternal({
+    bool forceRefresh = false,
+  }) {
+    if (!_appleRetentionMode || context.read<UserState>().isVip) {
+      return Future.value(const []);
+    }
+    _retentionCoversFuture ??= _fetchVideoRetentionCovers();
+    if (!forceRefresh && _retentionOffersFuture != null) {
+      return _retentionOffersFuture!;
+    }
+    final task = _fetchVideoRetentionOffers();
+    _retentionOffersFuture = task;
     unawaited(
-      showVipPayBottomSheet(
-        context,
-        episodeCoins: _unlockCoinsFrom(widget.item).toString(),
+      task.then<void>(
+        (offers) {
+          if (offers.isEmpty && identical(_retentionOffersFuture, task)) {
+            _retentionOffersFuture = null;
+          }
+        },
+        onError: (_, _) {
+          if (identical(_retentionOffersFuture, task)) {
+            _retentionOffersFuture = null;
+          }
+        },
       ),
     );
+    return task;
+  }
+
+  Future<List<_VideoRetentionOffer>> _fetchVideoRetentionOffers() async {
+    try {
+      await Global.ensureAnonymousSession();
+      Global.payTrace('video retention products request price_type=1');
+      final products = await api<dynamic>(
+        'applePay/products',
+        method: Method.post,
+        data: {'price_type': 1},
+        loading: false,
+        showError: false,
+      );
+      Global.payTrace(
+        'video retention products response c=${products.c} m=${products.m}',
+      );
+      if (products.c != 0) {
+        return const [];
+      }
+      var offers = _orderedVideoRetentionOffers(
+        _videoRetentionRows(products.d),
+      );
+      if (offers.isEmpty) {
+        return const [];
+      }
+      if (!Global.webPreview && !kIsWeb && Platform.isIOS) {
+        final productIds = offers
+            .map((offer) => offer.storeProductId)
+            .where((id) => id.trim().isNotEmpty)
+            .toSet();
+        unawaited(Purchase.warmUpProductDetails(productIds));
+        var eligibility = Purchase.cachedIntroductoryOfferEligibility(
+          productIds,
+        );
+        if (eligibility.isEmpty) {
+          eligibility = await Purchase.introductoryOfferEligibility(productIds);
+        }
+        if (eligibility.isEmpty) {
+          Global.payTrace(
+            'video retention eligibility empty, retry after warmup',
+          );
+          await Purchase.warmUpProductDetails(productIds);
+          eligibility = await Purchase.introductoryOfferEligibility(productIds);
+        }
+        if (eligibility.isEmpty) {
+          Global.payTrace('video retention eligibility empty after retry');
+          return const [];
+        }
+        offers = offers.where((offer) {
+          return eligibility[offer.storeProductId] == true;
+        }).toList();
+        if (offers.isEmpty) {
+          Global.payTrace('video retention no eligible offers');
+          return const [];
+        }
+        Global.payTrace(
+          'video retention eligible offers=${offers.map((offer) => offer.storeProductId).join(',')}',
+        );
+      }
+      unawaited(
+        Purchase.warmUpProductDetails(
+          offers.map((offer) => offer.storeProductId),
+        ),
+      );
+      return offers;
+    } on Exception catch (error) {
+      Global.logger.d('video retention products failed error=$error');
+      Global.payTrace('video retention products failed error=$error');
+      return const [];
+    }
+  }
+
+  Future<List<_VideoRetentionCover>> _fetchVideoRetentionCovers() async {
+    try {
+      final videos = await api<dynamic>(
+        'feed/membership?page=1',
+        method: Method.post,
+        loading: false,
+        showError: false,
+      );
+      if (videos.c != 0) {
+        return const [];
+      }
+      return _videoRetentionCoverRows(videos.d)
+          .take(5)
+          .map(_VideoRetentionCover.fromRaw)
+          .where((cover) => cover.image.isNotEmpty)
+          .toList();
+    } on Exception catch (error) {
+      Global.logger.d('video retention covers failed error=$error');
+      return const [];
+    }
+  }
+
+  Future<bool> _runVideoRetentionOffers(
+    int unlockCoins,
+    Future<List<_VideoRetentionOffer>> offersFuture,
+  ) async {
+    if (!_appleRetentionMode || context.read<UserState>().isVip) {
+      return false;
+    }
+    var offers = await offersFuture;
+    if (offers.isEmpty) {
+      _retentionOffersFuture = null;
+      offers = await _prefetchVideoRetentionOffersInternal(forceRefresh: true);
+    }
+    if (!mounted || !widget.active || offers.isEmpty) {
+      return false;
+    }
+    for (var index = 0; index < offers.length; index += 1) {
+      if (!mounted || !widget.active) {
+        return false;
+      }
+      final isVip = context.read<UserState>().isVip;
+      if (isVip) {
+        return true;
+      }
+      final offer = offers[index];
+      final retentionStep = _videoRetentionStepForOffer(
+        offer,
+        fallbackStep: index + 1,
+      );
+      final selection = await _showVideoRetentionOffer(
+        offer,
+        step: retentionStep,
+        total: offers.length,
+      );
+      if (!mounted || !widget.active) {
+        return false;
+      }
+      if (selection == null) {
+        Global.payTrace('video retention dismissed step=$retentionStep');
+        continue;
+      }
+      final selected = selection.offer;
+      final purchased =
+          selection.purchased || await _purchaseVideoRetentionOffer(selected);
+      if (!mounted || !widget.active) {
+        return purchased;
+      }
+      if (!purchased) {
+        Global.payTrace('video retention purchase cancelled');
+        return false;
+      }
+      Global.payTrace('video retention purchase success');
+      await _verifyPendingUnlockAfterTopUp(unlockCoins, VipPayResult.vip);
+      return true;
+    }
+    return false;
+  }
+
+  Future<_VideoRetentionOfferSelection?> _showVideoRetentionOffer(
+    _VideoRetentionOffer offer, {
+    required int step,
+    required int total,
+  }) {
+    final usesFinalClosePurchase =
+        step >= 3 && !offer.isQuarterly && !Global.deleteAccountEnabled;
+    return showModalBottomSheet<_VideoRetentionOfferSelection>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: !usesFinalClosePurchase,
+      enableDrag: false,
+      barrierColor: Colors.black.withAlpha(184),
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return _VideoRetentionOfferSheet(
+          offer: offer,
+          step: step,
+          total: total,
+          coversFuture:
+              _retentionCoversFuture ??
+              Future<List<_VideoRetentionCover>>.value(
+                const <_VideoRetentionCover>[],
+              ),
+          enableFinalClosePurchase: usesFinalClosePurchase,
+          onOfferPurchase: _purchaseVideoRetentionOffer,
+          onFinalClosePurchase: (selectedOffer) async {
+            final purchased = await _purchaseVideoRetentionOffer(selectedOffer);
+            if (Global.webPreview) {
+              return false;
+            }
+            return purchased;
+          },
+        );
+      },
+    );
+  }
+
+  Future<bool> _purchaseVideoRetentionOffer(_VideoRetentionOffer offer) async {
+    Global.payTrace(
+      'video retention purchase localProductId=${offer.localProductId} appleProductId=${offer.storeProductId}',
+    );
+    final priceType = await Purchase.introductoryPriceType(
+      offer.storeProductId,
+    );
+    await _trackVideoRetentionCheckout(offer);
+    final result = Global.webPreview
+        ? await Purchase.previewCreate(
+            localProductId: offer.localProductId,
+            appleProductId: offer.storeProductId,
+            type: 1,
+            priceType: priceType,
+          )
+        : await Purchase.making(
+            localProductId: offer.localProductId,
+            appleProductId: offer.storeProductId,
+            type: 1,
+            priceType: priceType,
+          );
+    if (result) {
+      await _trackVideoRetentionSubscribe(offer);
+    }
+    return result;
+  }
+
+  Future<void> _trackVideoRetentionCheckout(_VideoRetentionOffer offer) async {
+    if (Global.webPreview) {
+      Global.payTrace('web preview skip retention checkout tracking');
+      return;
+    }
+    final price = double.tryParse(offer.price) ?? 0;
+    AdjustTracking.trackInitiateCheckout(
+      productId: offer.storeProductId,
+      amount: price,
+    );
+    try {
+      await TikTokEventsSdk.logEvent(
+        event: TikTokEvent(
+          eventName: 'checkout',
+          properties: EventProperties(
+            description: offer.storeProductId,
+            value: price,
+            currency: CurrencyCode.USD,
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      Global.logger.d('video retention checkout tracking failed: $error');
+      Global.payTrace('video retention checkout tracking failed $error');
+    }
+  }
+
+  Future<void> _trackVideoRetentionSubscribe(_VideoRetentionOffer offer) async {
+    if (Global.webPreview) {
+      Global.payTrace('web preview skip retention subscribe tracking');
+      return;
+    }
+    final price = double.tryParse(offer.price) ?? 0;
+    try {
+      await TikTokEventsSdk.logEvent(
+        event: TikTokEvent(
+          eventName: 'subscribe',
+          properties: EventProperties(
+            description: offer.storeProductId,
+            value: price,
+            currency: CurrencyCode.USD,
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      Global.logger.d('video retention subscribe tracking failed: $error');
+      Global.payTrace('video retention subscribe tracking failed $error');
+    }
   }
 
   Future<void> _verifyPendingUnlockAfterTopUp(
@@ -2446,7 +2833,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
                 _intValue(widget.item['episode']),
               ),
               speed: _speed,
-              onBack: context.pop,
+              onBack: _closeEpisodePage,
               onSpeed: _showSpeedSheet,
             ),
           _RightActions(
@@ -3715,6 +4102,824 @@ String _androidPairText(String value, int first, int second) {
       .replaceAll('"', '');
 }
 
+const _videoRetentionHeaderAsset =
+    'assets/images/video-retention-promo/bg@2x.png';
+const _videoRetentionCouponAsset =
+    'assets/images/video-retention-promo/bg_coupon@2x.png';
+const _videoRetentionCloseAsset =
+    'assets/images/video-retention-promo/close.svg';
+const _videoRetentionProductIds = {
+  'weekly_retention_1',
+  'weekly_retention_2',
+  'quarterly',
+};
+
+class _VideoRetentionOffer {
+  const _VideoRetentionOffer({
+    required this.raw,
+    required this.localProductId,
+    required this.storeProductId,
+    required this.name,
+    required this.discountType,
+    required this.price,
+    required this.renewalPrice,
+    required this.isWeekly,
+    required this.isQuarterly,
+  });
+
+  final Map<String, dynamic> raw;
+  final String localProductId;
+  final String storeProductId;
+  final String name;
+  final int discountType;
+  final String price;
+  final String renewalPrice;
+  final bool isWeekly;
+  final bool isQuarterly;
+
+  String get priceLabel => _videoRetentionMoneyLabel(price);
+  String get renewalLabel => _videoRetentionMoneyLabel(renewalPrice);
+  int get discountPercent =>
+      _videoRetentionDiscountPercent(price, renewalPrice);
+
+  static _VideoRetentionOffer? fromRaw(dynamic value) {
+    final map = _asMap(value);
+    if (map.isEmpty) {
+      return null;
+    }
+
+    final localProductId = _videoRetentionFirstNotEmpty([
+      map['id'],
+      map['local_product_id'],
+      map['localProductId'],
+      map['product_local_id'],
+    ]);
+    final storeProductId = _videoRetentionFirstNotEmpty([
+      map['product_id'],
+      map['apple_product_id'],
+      map['ios_product_id'],
+      map['google_product_id'],
+      map['googleProductId'],
+      map['store_product_id'],
+      map['name'],
+    ]);
+    if (localProductId.isEmpty || storeProductId.isEmpty) {
+      return null;
+    }
+    if (!_videoRetentionAllowsProduct(map, localProductId, storeProductId)) {
+      return null;
+    }
+
+    final name = _videoRetentionFirstNotEmpty([
+      map['name'],
+      map['display_name'],
+      map['displayName'],
+      map['title'],
+      map['base_plan_id'],
+      map['basePlanId'],
+      map['product_id'],
+    ]);
+    final plan = _videoRetentionFirstNotEmpty([
+      map['base_plan_id'],
+      map['basePlanId'],
+      map['plan_id'],
+      map['planId'],
+      map['period'],
+      map['duration'],
+      map['product_id'],
+      map['name'],
+    ]).toLowerCase();
+    final catalogPrice = _text(map['price']);
+    final firstPrice = _videoRetentionFirstNotEmpty([
+      map['first_price'],
+      map['firstPrice'],
+      map['offer_price'],
+      map['offerPrice'],
+      map['discount_price'],
+      map['discountPrice'],
+      map['intro_price'],
+      map['introPrice'],
+    ]);
+    final renewalCandidate = _videoRetentionFirstNotEmpty([
+      map['renewal_price'],
+      map['renewalPrice'],
+      map['origin_price'],
+      map['originPrice'],
+      map['original_price'],
+      map['originalPrice'],
+      map['normal_price'],
+      map['normalPrice'],
+      map['regular_price'],
+      map['regularPrice'],
+    ]);
+    final price = firstPrice.isNotEmpty ? firstPrice : catalogPrice;
+    final renewalPrice = renewalCandidate.isNotEmpty
+        ? renewalCandidate
+        : catalogPrice.isNotEmpty
+        ? catalogPrice
+        : price;
+    if (price.isEmpty || renewalPrice.isEmpty) {
+      return null;
+    }
+
+    return _VideoRetentionOffer(
+      raw: map,
+      localProductId: localProductId,
+      storeProductId: storeProductId,
+      name: name,
+      discountType: _intValue(map['discount_type'] ?? map['discountType']),
+      price: price,
+      renewalPrice: renewalPrice,
+      isWeekly: _videoRetentionLooksWeekly(plan),
+      isQuarterly: _videoRetentionLooksQuarterly(plan),
+    );
+  }
+}
+
+class _VideoRetentionCover {
+  const _VideoRetentionCover({required this.id, required this.image});
+
+  final String id;
+  final String image;
+
+  static _VideoRetentionCover fromRaw(dynamic value) {
+    final map = _asMap(value);
+    return _VideoRetentionCover(
+      id: _videoRetentionFirstNotEmpty([
+        map['movie_id'],
+        map['movieId'],
+        map['id'],
+      ]),
+      image: _posterUrl(map),
+    );
+  }
+}
+
+class _VideoRetentionOfferSelection {
+  const _VideoRetentionOfferSelection({
+    required this.offer,
+    required this.purchased,
+  });
+
+  final _VideoRetentionOffer offer;
+  final bool purchased;
+}
+
+class _VideoRetentionOfferSheet extends StatefulWidget {
+  const _VideoRetentionOfferSheet({
+    required this.offer,
+    required this.step,
+    required this.total,
+    required this.coversFuture,
+    required this.enableFinalClosePurchase,
+    required this.onOfferPurchase,
+    required this.onFinalClosePurchase,
+  });
+
+  final _VideoRetentionOffer offer;
+  final int step;
+  final int total;
+  final Future<List<_VideoRetentionCover>> coversFuture;
+  final bool enableFinalClosePurchase;
+  final Future<bool> Function(_VideoRetentionOffer offer) onOfferPurchase;
+  final Future<bool> Function(_VideoRetentionOffer offer) onFinalClosePurchase;
+
+  @override
+  State<_VideoRetentionOfferSheet> createState() =>
+      _VideoRetentionOfferSheetState();
+}
+
+class _VideoRetentionOfferSheetState extends State<_VideoRetentionOfferSheet> {
+  bool _ctaPurchaseInFlight = false;
+  bool _closePurchaseAttempted = false;
+  bool _closePurchaseInFlight = false;
+
+  bool get _isStep3 => widget.step >= 3 || widget.offer.isQuarterly;
+
+  Future<void> _handleCta() async {
+    if (_ctaPurchaseInFlight || _closePurchaseInFlight) {
+      return;
+    }
+
+    _ctaPurchaseInFlight = true;
+    var purchased = false;
+    try {
+      purchased = await widget.onOfferPurchase(widget.offer);
+    } on Exception catch (error) {
+      Global.logger.d('video retention cta purchase failed: $error');
+    } finally {
+      if (!purchased) {
+        _ctaPurchaseInFlight = false;
+        if (_isStep3) {
+          _closePurchaseAttempted = true;
+        }
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    if (purchased) {
+      Navigator.pop(
+        context,
+        _VideoRetentionOfferSelection(offer: widget.offer, purchased: true),
+      );
+    }
+  }
+
+  Future<void> _handleClose() async {
+    if (_ctaPurchaseInFlight) {
+      return;
+    }
+    if (!widget.enableFinalClosePurchase || _closePurchaseAttempted) {
+      Navigator.pop(context);
+      return;
+    }
+    if (_closePurchaseInFlight) {
+      return;
+    }
+
+    setState(() => _closePurchaseInFlight = true);
+    var purchased = false;
+    try {
+      purchased = await widget.onFinalClosePurchase(widget.offer);
+    } on Exception catch (error) {
+      Global.logger.d('video retention final close purchase failed: $error');
+    } finally {
+      if (mounted && !purchased) {
+        setState(() {
+          _closePurchaseAttempted = true;
+          _closePurchaseInFlight = false;
+        });
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    if (purchased) {
+      Navigator.pop(
+        context,
+        _VideoRetentionOfferSelection(offer: widget.offer, purchased: true),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final wide = media.size.width >= 560;
+    final radius = wide
+        ? BorderRadius.circular(20)
+        : BorderRadius.vertical(top: Radius.circular(20));
+
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: wide ? 420 : double.infinity,
+          maxHeight: media.size.height * 0.88,
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Color(0xff222222),
+            borderRadius: radius,
+          ),
+          clipBehavior: Clip.hardEdge,
+          child: Stack(
+            children: [
+              SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  14,
+                  0,
+                  14,
+                  16 + media.padding.bottom,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _VideoRetentionHeader(step: widget.step, isStep3: _isStep3),
+                    SizedBox(height: _isStep3 ? 10 : 18),
+                    if (_isStep3)
+                      _VideoRetentionStep3Card(offer: widget.offer)
+                    else
+                      _VideoRetentionCouponCard(
+                        offer: widget.offer,
+                        step: widget.step,
+                      ),
+                    if (_isStep3)
+                      _VideoRetentionStep3Cta(
+                        priceLabel: widget.offer.priceLabel,
+                        onTap: _handleCta,
+                      )
+                    else ...[
+                      _VideoRetentionCta(
+                        priceLabel: widget.offer.priceLabel,
+                        onTap: _handleCta,
+                      ),
+                      if (widget.step == 2)
+                        _VideoRetentionStep2Disclaimer(
+                          renewalLabel: widget.offer.renewalLabel,
+                        ),
+                    ],
+                    _VideoRetentionShorts(coversFuture: widget.coversFuture),
+                  ],
+                ),
+              ),
+              PositionedDirectional(
+                top: 14,
+                end: 14,
+                child: InkWell(
+                  onTap: _closePurchaseInFlight ? null : _handleClose,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withAlpha(31),
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: SvgPicture.asset(
+                      _videoRetentionCloseAsset,
+                      width: 14,
+                      height: 14,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoRetentionHeader extends StatelessWidget {
+  const _VideoRetentionHeader({required this.step, required this.isStep3});
+
+  final int step;
+  final bool isStep3;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: isStep3 ? 82 : 64,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          PositionedDirectional(
+            top: 0,
+            start: -20,
+            end: -20,
+            child: Image.asset(
+              _videoRetentionHeaderAsset,
+              fit: BoxFit.contain,
+              alignment: Alignment.topCenter,
+            ),
+          ),
+          Positioned.fill(
+            child: Padding(
+              padding: EdgeInsets.only(top: 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    isStep3
+                        ? t.retention_promo_title_step3
+                        : t.retention_promo_title,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      height: 1.2,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                  SizedBox(height: isStep3 ? 6 : 4),
+                  if (isStep3)
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        gradient: LinearGradient(
+                          colors: [Color(0xfffff86d), Color(0xffe8a42d)],
+                        ),
+                      ),
+                      child: Text(
+                        t.retention_promo_badge_onetime,
+                        style: TextStyle(
+                          color: Color(0xff3b2a12),
+                          fontSize: 13,
+                          height: 1.2,
+                          fontWeight: FontWeight.w600,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                    )
+                  else
+                    Text(
+                      step == 2
+                          ? t.retention_promo_subtitle_step2
+                          : t.retention_promo_subtitle_step1,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withAlpha(191),
+                        fontSize: 12,
+                        height: 1.2,
+                        fontWeight: FontWeight.w400,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VideoRetentionCouponCard extends StatelessWidget {
+  const _VideoRetentionCouponCard({required this.offer, required this.step});
+
+  final _VideoRetentionOffer offer;
+  final int step;
+
+  @override
+  Widget build(BuildContext context) {
+    final pricingLines = _videoRetentionPricingLines(offer, step);
+    return Padding(
+      padding: EdgeInsets.only(bottom: 24),
+      child: SizedBox(
+        height: 126,
+        width: double.infinity,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(_videoRetentionCouponAsset, fit: BoxFit.fill),
+            Transform.translate(
+              offset: Offset(0, -3),
+              child: Column(
+                children: [
+                  Expanded(
+                    flex: 91,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          t.retention_promo_surprise_discount,
+                          style: TextStyle(
+                            color: Color(0xff633e25),
+                            fontSize: 12,
+                            height: 1,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          '${offer.discountPercent}%',
+                          style: TextStyle(
+                            color: Color(0xff633e25),
+                            fontSize: 38,
+                            height: 1,
+                            fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    flex: 35,
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: pricingLines
+                            .map(
+                              (line) => Text(
+                                line,
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Color(0xbf633e25),
+                                  fontSize: 10,
+                                  height: 1.4,
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoRetentionStep3Card extends StatelessWidget {
+  const _VideoRetentionStep3Card({required this.offer});
+
+  final _VideoRetentionOffer offer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(18, 16, 18, 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [Color(0xffffecd4), Color(0xfff3cb93)],
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            t.retention_promo_exclusive_title,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Color(0xff633e25),
+              fontSize: 18,
+              height: 1.2,
+              fontWeight: FontWeight.w500,
+              decoration: TextDecoration.none,
+            ),
+          ),
+          Text(
+            t.retention_promo_exclusive_subtitle,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Color(0xff633e25),
+              fontSize: 10,
+              height: 1.3,
+              decoration: TextDecoration.none,
+            ),
+          ),
+          SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                offer.renewalLabel,
+                style: TextStyle(
+                  color: Color(0x80633e25),
+                  fontSize: 14,
+                  height: 1.2,
+                  fontWeight: FontWeight.w500,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+              SizedBox(width: 8),
+              Text(
+                t.retention_promo_off_badge(percent: offer.discountPercent),
+                style: TextStyle(
+                  color: Color(0xffc90000),
+                  fontSize: 12,
+                  height: 1.2,
+                  fontWeight: FontWeight.w500,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 2),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                offer.priceLabel,
+                style: TextStyle(
+                  color: Color(0xffc90000),
+                  fontSize: 36,
+                  height: 1,
+                  fontWeight: FontWeight.w700,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+              Padding(
+                padding: EdgeInsetsDirectional.only(start: 8, bottom: 3),
+                child: Text(
+                  t.retention_promo_period_90days,
+                  style: TextStyle(
+                    color: Color(0xbf633e25),
+                    fontSize: 10,
+                    height: 1.2,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 6),
+          Text(
+            t.retention_promo_per_day(
+              price: _videoRetentionPerDayLabel(offer.price, 90),
+            ),
+            style: TextStyle(
+              color: Color(0xff633e25),
+              fontSize: 10,
+              height: 1.2,
+              decoration: TextDecoration.none,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VideoRetentionCta extends StatelessWidget {
+  const _VideoRetentionCta({required this.priceLabel, required this.onTap});
+
+  final String priceLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: 24),
+      child: _VideoRetentionCtaButton(priceLabel: priceLabel, onTap: onTap),
+    );
+  }
+}
+
+class _VideoRetentionStep3Cta extends StatelessWidget {
+  const _VideoRetentionStep3Cta({
+    required this.priceLabel,
+    required this.onTap,
+  });
+
+  final String priceLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(top: 24, bottom: 12),
+      child: _VideoRetentionCtaButton(priceLabel: priceLabel, onTap: onTap),
+    );
+  }
+}
+
+class _VideoRetentionCtaButton extends StatelessWidget {
+  const _VideoRetentionCtaButton({
+    required this.priceLabel,
+    required this.onTap,
+  });
+
+  final String priceLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: double.infinity,
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Color(0xffff3d5d),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          t.retention_promo_cta_sale(price: priceLabel),
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            height: 1.2,
+            fontWeight: FontWeight.w500,
+            decoration: TextDecoration.none,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoRetentionStep2Disclaimer extends StatelessWidget {
+  const _VideoRetentionStep2Disclaimer({required this.renewalLabel});
+
+  final String renewalLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(8, 0, 8, 10),
+      child: Text(
+        t.retention_promo_terms_step2(renewal: renewalLabel),
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: Colors.white.withAlpha(140),
+          fontSize: 10,
+          height: 1.4,
+          decoration: TextDecoration.none,
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoRetentionShorts extends StatelessWidget {
+  const _VideoRetentionShorts({required this.coversFuture});
+
+  final Future<List<_VideoRetentionCover>> coversFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          t.retention_promo_vip_shorts,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            height: 1.2,
+            fontWeight: FontWeight.w500,
+            decoration: TextDecoration.none,
+          ),
+        ),
+        SizedBox(height: 12),
+        FutureBuilder<List<_VideoRetentionCover>>(
+          future: coversFuture,
+          builder: (context, snapshot) {
+            final covers = snapshot.data ?? const <_VideoRetentionCover>[];
+            return Row(
+              children: [
+                for (var index = 0; index < 5; index += 1) ...[
+                  Expanded(
+                    child: _VideoRetentionPoster(
+                      cover: index < covers.length ? covers[index] : null,
+                    ),
+                  ),
+                  if (index < 4) SizedBox(width: 8),
+                ],
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _VideoRetentionPoster extends StatelessWidget {
+  const _VideoRetentionPoster({required this.cover});
+
+  final _VideoRetentionCover? cover;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = cover?.image ?? '';
+    final ratio = MediaQuery.of(context).devicePixelRatio.clamp(1.0, 3.0);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: AspectRatio(
+        aspectRatio: 2 / 3,
+        child: image.isEmpty
+            ? ColoredBox(color: Colors.white.withAlpha(20))
+            : LayoutBuilder(
+                builder: (context, constraints) {
+                  final width = constraints.maxWidth;
+                  final height = constraints.maxHeight;
+                  return LazyImage(
+                    url: image,
+                    width: width,
+                    height: height,
+                    fit: BoxFit.cover,
+                    cacheWidth: (width * ratio).round(),
+                    cacheHeight: (height * ratio).round(),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
 class _LockedOverlay extends StatelessWidget {
   const _LockedOverlay({required this.onBack, required this.onGetVip});
 
@@ -4392,6 +5597,251 @@ List<dynamic> _pageRows(Map<String, dynamic>? data) {
   return value is List ? value : [];
 }
 
+List<dynamic> _videoRetentionRows(dynamic payload) {
+  return _videoRetentionListFromPayload(payload, const [
+    'subscription',
+    'offers',
+    'products',
+    'data',
+    'list',
+    'items',
+  ]);
+}
+
+List<dynamic> _videoRetentionCoverRows(dynamic payload) {
+  return _videoRetentionListFromPayload(payload, const [
+    'data',
+    'list',
+    'items',
+    'videos',
+  ]);
+}
+
+List<dynamic> _videoRetentionListFromPayload(
+  dynamic payload,
+  List<String> keys,
+) {
+  dynamic current = payload;
+  for (var depth = 0; depth < 4; depth += 1) {
+    if (current is List) {
+      return current;
+    }
+    if (current is! Map) {
+      return const [];
+    }
+    for (final key in keys) {
+      final value = current[key];
+      if (value is List) {
+        return value;
+      }
+    }
+    current =
+        current['data'] ??
+        current['list'] ??
+        current['items'] ??
+        current['subscription'] ??
+        current['offers'] ??
+        current['products'];
+  }
+  return current is List ? current : const [];
+}
+
+List<_VideoRetentionOffer> _orderedVideoRetentionOffers(List<dynamic> rows) {
+  final offers = rows
+      .map(_VideoRetentionOffer.fromRaw)
+      .whereType<_VideoRetentionOffer>()
+      .toList();
+  if (offers.isEmpty) {
+    return const [];
+  }
+
+  final hasDiscountType = offers.any((offer) => offer.discountType > 0);
+  if (!hasDiscountType) {
+    return offers..sort(_compareVideoRetentionOfferFallback);
+  }
+
+  final ordered = <_VideoRetentionOffer>[];
+  final seen = <String>{};
+
+  void addFirst(bool Function(_VideoRetentionOffer offer) test) {
+    for (final offer in offers) {
+      final key = '${offer.localProductId}:${offer.storeProductId}';
+      if (!seen.contains(key) && test(offer)) {
+        ordered.add(offer);
+        seen.add(key);
+        return;
+      }
+    }
+  }
+
+  addFirst((offer) => offer.isWeekly && offer.discountType == 1);
+  addFirst((offer) => offer.isWeekly && offer.discountType == 2);
+  addFirst((offer) => offer.isQuarterly && offer.discountType == 1);
+
+  final rest = offers.where((offer) {
+    return !seen.contains('${offer.localProductId}:${offer.storeProductId}');
+  }).toList()..sort(_compareVideoRetentionOfferFallback);
+  ordered.addAll(rest);
+  return ordered;
+}
+
+int _compareVideoRetentionOfferFallback(
+  _VideoRetentionOffer a,
+  _VideoRetentionOffer b,
+) {
+  final period = _videoRetentionPeriodRank(
+    a,
+  ).compareTo(_videoRetentionPeriodRank(b));
+  if (period != 0) {
+    return period;
+  }
+  final price = _videoRetentionMoneyNumber(
+    b.price,
+  ).compareTo(_videoRetentionMoneyNumber(a.price));
+  if (price != 0) {
+    return price;
+  }
+  return a.localProductId.compareTo(b.localProductId);
+}
+
+int _videoRetentionPeriodRank(_VideoRetentionOffer offer) {
+  if (offer.isWeekly) {
+    return 0;
+  }
+  if (offer.isQuarterly) {
+    return 1;
+  }
+  return 2;
+}
+
+int _videoRetentionStepForOffer(
+  _VideoRetentionOffer offer, {
+  required int fallbackStep,
+}) {
+  if (offer.isWeekly && offer.discountType == 1) {
+    return 1;
+  }
+  if (offer.isWeekly && offer.discountType == 2) {
+    return 2;
+  }
+  if (offer.isQuarterly) {
+    return 3;
+  }
+  return fallbackStep.clamp(1, 3).toInt();
+}
+
+String _videoRetentionFirstNotEmpty(List<dynamic> values) {
+  for (final value in values) {
+    final text = _text(value);
+    if (text.isNotEmpty) {
+      return text;
+    }
+  }
+  return '';
+}
+
+bool _videoRetentionAllowsProduct(
+  Map<String, dynamic> map,
+  String localProductId,
+  String storeProductId,
+) {
+  final ids = [
+    localProductId,
+    storeProductId,
+    map['product_id'],
+    map['apple_product_id'],
+    map['ios_product_id'],
+    map['google_product_id'],
+    map['googleProductId'],
+    map['store_product_id'],
+    map['name'],
+    map['base_plan_id'],
+    map['basePlanId'],
+  ];
+  return ids.any(
+    (id) => _videoRetentionProductIds.contains(_text(id).toLowerCase()),
+  );
+}
+
+bool _videoRetentionLooksWeekly(String value) {
+  final text = value.toLowerCase();
+  return text.contains('weekly') ||
+      text.contains('week') ||
+      text.contains('p1w');
+}
+
+bool _videoRetentionLooksQuarterly(String value) {
+  final text = value.toLowerCase();
+  return text.contains('quarter') ||
+      text.contains('quarterly') ||
+      text.contains('season') ||
+      text.contains('3month') ||
+      text.contains('3_month') ||
+      text.contains('p3m') ||
+      text.contains('90');
+}
+
+List<String> _videoRetentionPricingLines(_VideoRetentionOffer offer, int step) {
+  if (step == 1) {
+    return [
+      t.retention_promo_terms_step1_line1(price: offer.priceLabel),
+      t.retention_promo_terms_step1_line2(renewal: offer.renewalLabel),
+    ];
+  }
+  if (step == 2) {
+    return [t.retention_promo_coupon_pricing_step2(price: offer.priceLabel)];
+  }
+  if (offer.isWeekly) {
+    return [
+      t.retention_promo_terms_weekly(
+        price: offer.priceLabel,
+        renewal: offer.renewalLabel,
+      ),
+    ];
+  }
+  return [
+    t.retention_promo_terms_quarterly(
+      price: offer.priceLabel,
+      renewal: offer.renewalLabel,
+    ),
+  ];
+}
+
+String _videoRetentionMoneyLabel(String value) {
+  final clean = _text(value);
+  if (clean.isEmpty) {
+    return r'$0.00';
+  }
+  if (clean.contains(r'$')) {
+    return clean;
+  }
+  return '\$$clean';
+}
+
+double _videoRetentionMoneyNumber(String value) {
+  return double.tryParse(value.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0;
+}
+
+int _videoRetentionDiscountPercent(String price, String renewalPrice) {
+  final p = _videoRetentionMoneyNumber(price);
+  final r = _videoRetentionMoneyNumber(renewalPrice);
+  if (p <= 0 || r <= 0 || p >= r) {
+    return 0;
+  }
+  final raw = ((r - p) / r) * 100;
+  final rounded = (raw / 10).round().clamp(0, 9);
+  return rounded.toInt() * 10;
+}
+
+String _videoRetentionPerDayLabel(String price, int days) {
+  final value = _videoRetentionMoneyNumber(price);
+  if (value <= 0 || days <= 0) {
+    return r'$0.00';
+  }
+  final perDay = ((value / days) * 100).floor() / 100;
+  return '\$${perDay.toStringAsFixed(2)}';
+}
+
 bool _inferForYouHasMore(Map<String, dynamic> data, int rowCount) {
   final rawHasMore = data['has_more'];
   if (rawHasMore == true || rawHasMore == 1 || rawHasMore == '1') {
@@ -4415,6 +5865,22 @@ String _watchToEpisodeId(dynamic watchTo) {
     return '';
   }
   return _text(watchTo['episode_id'] ?? watchTo['ep_id'] ?? watchTo['epId']);
+}
+
+String _watchToRouteKey(dynamic watchTo) {
+  if (watchTo is! Map) {
+    return '';
+  }
+  return [
+    _text(watchTo['episode_id'] ?? watchTo['ep_id'] ?? watchTo['epId']),
+    _text(watchTo['episode'] ?? watchTo['episodeNum'] ?? watchTo['ep']),
+    _text(
+      watchTo['position_ms'] ??
+          watchTo['playback_position_ms'] ??
+          watchTo['playbackPositionMs'],
+    ),
+    _text(watchTo['video'] ?? watchTo['video_url']),
+  ].join('|');
 }
 
 String _posterUrl(Map<String, dynamic> item) {

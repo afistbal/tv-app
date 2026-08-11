@@ -63,15 +63,44 @@ import Security
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey : Any] = [:]
   ) -> Bool {
+    let handledByPlugins = super.application(app, open: url, options: options)
     if isYogoDeepLink(url) {
       deepLinkStreamHandler.handle(url.absoluteString)
       return true
     }
-    return super.application(app, open: url, options: options)
+    return handledByPlugins
+  }
+
+  override func application(
+    _ application: UIApplication,
+    continue userActivity: NSUserActivity,
+    restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+  ) -> Bool {
+    let handledByPlugins = super.application(
+      application,
+      continue: userActivity,
+      restorationHandler: restorationHandler
+    )
+    if userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+       let url = userActivity.webpageURL,
+       isYogoUniversalLink(url) {
+      deepLinkStreamHandler.handle(url.absoluteString)
+      return true
+    }
+    return handledByPlugins
   }
 
   private func isYogoDeepLink(_ url: URL) -> Bool {
     return url.scheme == Bundle.main.bundleIdentifier
+  }
+
+  private func isYogoUniversalLink(_ url: URL) -> Bool {
+    guard url.scheme == "https" else { return false }
+    let host = url.host?.lowercased()
+    guard host == "yogoshort.com" || host == "www.yogoshort.com" else {
+      return false
+    }
+    return url.path == "/open" || url.path.hasPrefix("/open/")
   }
 }
 

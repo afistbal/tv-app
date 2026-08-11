@@ -1,0 +1,88 @@
+class FromSourceClipboardValue {
+  const FromSourceClipboardValue({required this.raw, required this.source});
+
+  static const int maxRawLength = 8192;
+
+  final String raw;
+  final String source;
+
+  /// 对齐 slot-TV：首次有效来源写入；已有来源只允许新的 A100 FB/TikTok
+  /// source 覆盖。解析只用于校验，返回和上报始终使用原始 query 字符串。
+  static FromSourceClipboardValue? selectForLogin({
+    required String? clipboard,
+    required String? cached,
+    required String? cachedSourceAnchor,
+  }) {
+    final cachedValue = tryParse(cached);
+    final clipboardValue = tryParse(clipboard);
+    if (cachedValue == null) return clipboardValue;
+    if (clipboardValue == null) return cachedValue;
+
+    final anchor = (cachedSourceAnchor ?? '').trim().isNotEmpty
+        ? cachedSourceAnchor!.trim()
+        : cachedValue.source;
+    final sourceChanged =
+        clipboardValue.source.isNotEmpty && clipboardValue.source != anchor;
+    final isA100Campaign = RegExp(
+      r'^A100',
+      caseSensitive: false,
+    ).hasMatch(clipboardValue.source);
+    final haystack = clipboardValue.raw.toLowerCase();
+    final containsFbOrTiktok =
+        haystack.contains('fb') || haystack.contains('tiktok');
+
+    return sourceChanged && isA100Campaign && containsFbOrTiktok
+        ? clipboardValue
+        : cachedValue;
+  }
+
+  static FromSourceClipboardValue? tryParse(String? value) {
+    final raw = value ?? '';
+    if (raw.trim().isEmpty ||
+        raw.length > maxRawLength ||
+        raw.startsWith('?') ||
+        raw.contains('#')) {
+      return null;
+    }
+
+    try {
+      final params = Uri.splitQueryString(raw);
+      final movieId = int.tryParse(
+        (params['movieId'] ?? params['id'] ?? '').trim(),
+      );
+      if (movieId == null || movieId <= 0) return null;
+
+      final token = _adjustToken(params);
+      if (!RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(token)) return null;
+
+      return FromSourceClipboardValue(
+        raw: raw,
+        source: (params['s'] ?? '').trim(),
+      );
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static String _adjustToken(Map<String, String> params) {
+    final direct =
+        (params['p0'] ??
+                params['adjust_token'] ??
+                params['adj_t'] ??
+                params['adjust_t'] ??
+                '')
+            .trim();
+    if (direct.isNotEmpty) return direct;
+
+    final trackerUrl =
+        (params['adjust_tracker_url'] ?? params['adjust_url'] ?? '').trim();
+    final uri = Uri.tryParse(trackerUrl);
+    if (uri == null ||
+        !(uri.host == 'app.adjust.com' ||
+            uri.host.endsWith('.app.adjust.com'))) {
+      return '';
+    }
+    final parts = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    return parts.isEmpty ? '' : parts.last;
+  }
+}

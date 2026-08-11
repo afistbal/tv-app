@@ -470,10 +470,11 @@ class _EmailLoginState extends State<_EmailLogin> {
     final close = Global.loading();
 
     try {
+      final submittedAdjustParams = AdjustTracking.loginParams();
       final result = await api(
         'login/email',
         method: Method.post,
-        data: {'email': _email, 'code': _code, ...AdjustTracking.loginParams()},
+        data: {'email': _email, 'code': _code, ...submittedAdjustParams},
       );
 
       if (result.c != 0) {
@@ -496,6 +497,9 @@ class _EmailLoginState extends State<_EmailLogin> {
         Global.error(t.login_failed);
         return;
       }
+      await AdjustTracking.markTokenAdidSynced(
+        submittedParams: submittedAdjustParams,
+      );
 
       if (!kIsWeb && !Global.webPreview) {
         unawaited(_syncFirebaseEmail(info, isNew: isNew));

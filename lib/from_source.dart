@@ -1,5 +1,5 @@
-class FromSourceClipboardValue {
-  const FromSourceClipboardValue({required this.raw, required this.source});
+class FromSourceValue {
+  const FromSourceValue({required this.raw, required this.source});
 
   static const int maxRawLength = 8192;
 
@@ -8,35 +8,35 @@ class FromSourceClipboardValue {
 
   /// 对齐 slot-TV：首次有效来源写入；已有来源只允许新的 A100 FB/TikTok
   /// source 覆盖。解析只用于校验，返回和上报始终使用原始 query 字符串。
-  static FromSourceClipboardValue? selectForLogin({
-    required String? clipboard,
+  static FromSourceValue? selectForLogin({
+    required String? incoming,
     required String? cached,
     required String? cachedSourceAnchor,
   }) {
     final cachedValue = tryParse(cached);
-    final clipboardValue = tryParse(clipboard);
-    if (cachedValue == null) return clipboardValue;
-    if (clipboardValue == null) return cachedValue;
+    final incomingValue = tryParse(incoming);
+    if (cachedValue == null) return incomingValue;
+    if (incomingValue == null) return cachedValue;
 
     final anchor = (cachedSourceAnchor ?? '').trim().isNotEmpty
         ? cachedSourceAnchor!.trim()
         : cachedValue.source;
     final sourceChanged =
-        clipboardValue.source.isNotEmpty && clipboardValue.source != anchor;
+        incomingValue.source.isNotEmpty && incomingValue.source != anchor;
     final isA100Campaign = RegExp(
       r'^A100',
       caseSensitive: false,
-    ).hasMatch(clipboardValue.source);
-    final haystack = clipboardValue.raw.toLowerCase();
+    ).hasMatch(incomingValue.source);
+    final haystack = incomingValue.raw.toLowerCase();
     final containsFbOrTiktok =
         haystack.contains('fb') || haystack.contains('tiktok');
 
     return sourceChanged && isA100Campaign && containsFbOrTiktok
-        ? clipboardValue
+        ? incomingValue
         : cachedValue;
   }
 
-  static FromSourceClipboardValue? tryParse(String? value) {
+  static FromSourceValue? tryParse(String? value) {
     final raw = value ?? '';
     if (raw.trim().isEmpty ||
         raw.length > maxRawLength ||
@@ -55,10 +55,7 @@ class FromSourceClipboardValue {
       final token = _adjustToken(params);
       if (!RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(token)) return null;
 
-      return FromSourceClipboardValue(
-        raw: raw,
-        source: (params['s'] ?? '').trim(),
-      );
+      return FromSourceValue(raw: raw, source: (params['s'] ?? '').trim());
     } on FormatException {
       return null;
     }

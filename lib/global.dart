@@ -17,7 +17,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
 import 'package:yogotv/app_config.dart';
-import 'package:yogotv/from_source_clipboard.dart';
+import 'package:yogotv/from_source.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/states/user.dart';
@@ -140,7 +140,7 @@ class Global {
     if (candidate == null || candidate.trim().isEmpty) {
       return false;
     }
-    final incoming = FromSourceClipboardValue.tryParse(candidate);
+    final incoming = FromSourceValue.tryParse(candidate);
     if (incoming == null) {
       logger.d('from_source ignored invalid $origin payload');
       return false;
@@ -148,8 +148,8 @@ class Global {
 
     final cached = sp.getString(_fromSourceKey) ?? '';
     final cachedSourceAnchor = sp.getString(_fromSourceSourceAnchorKey) ?? '';
-    final selected = FromSourceClipboardValue.selectForLogin(
-      clipboard: incoming.raw,
+    final selected = FromSourceValue.selectForLogin(
+      incoming: incoming.raw,
       cached: cached,
       cachedSourceAnchor: cachedSourceAnchor,
     );
@@ -174,43 +174,14 @@ class Global {
   static Future<Map<String, String>> _anonymousFromSourceParams() async {
     final cached = sp.getString(_fromSourceKey) ?? '';
     final cachedSourceAnchor = sp.getString(_fromSourceSourceAnchorKey) ?? '';
-    final cachedPayload = FromSourceClipboardValue.selectForLogin(
-      clipboard: null,
+    final cachedPayload = FromSourceValue.selectForLogin(
+      incoming: null,
       cached: cached,
       cachedSourceAnchor: cachedSourceAnchor,
     );
-    final cachedParams = cachedPayload == null
+    return cachedPayload == null
         ? <String, String>{}
         : {_fromSourceKey: cachedPayload.raw};
-    if (kIsWeb || webPreview || defaultTargetPlatform != TargetPlatform.iOS) {
-      return cachedParams;
-    }
-
-    try {
-      final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
-      final payload = FromSourceClipboardValue.selectForLogin(
-        clipboard: clipboard?.text,
-        cached: cached,
-        cachedSourceAnchor: cachedSourceAnchor,
-      );
-      if (payload == null) return const <String, String>{};
-      if (payload.raw != cached) {
-        await sp.setString(_fromSourceKey, payload.raw);
-        if (payload.source.isNotEmpty) {
-          await sp.setString(_fromSourceSourceAnchorKey, payload.source);
-        }
-        logger.d(
-          'from_source replaced from valid clipboard length=${payload.raw.length}',
-        );
-      }
-      return {_fromSourceKey: payload.raw};
-    } on PlatformException catch (error) {
-      logger.d('from_source clipboard unavailable: ${error.code}');
-      return cachedParams;
-    } catch (error) {
-      logger.d('from_source clipboard failed: $error');
-      return cachedParams;
-    }
   }
 
   static Future<void> refreshConfig() async {

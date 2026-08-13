@@ -1129,12 +1129,7 @@ String _tagLabel(dynamic tag) {
 
 String _tagId(dynamic tag) {
   if (tag is Map) {
-    return _text(
-      tag['matched_unique_id'] ??
-          tag['source_tag_name'] ??
-          tag['unique_id'] ??
-          tag['name'],
-    );
+    return _text(tag['source_tag_name']);
   }
   return '';
 }

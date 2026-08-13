@@ -21,6 +21,7 @@ import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
 import 'package:yogotv/pages/membership.dart';
+import 'package:yogotv/playback_progress_store.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/states/user.dart';
 import 'package:yogotv/video_playback_session.dart';
@@ -97,6 +98,9 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   final _subtitleRequests = <String, Future<ClosedCaptionFile>>{};
   final _batchRequests = <String, Future<void>>{};
   final _batchNoVideoIds = <String>{};
+  final _completedPlaybackItems = <String>{};
+
+  late final PlaybackProgressStore _playbackProgressStore;
 
   bool _loading = true;
   bool _loadingMore = false;
@@ -105,14 +109,18 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   int _current = 0;
   int _nextForYouPage = 2;
   int _syncGeneration = 0;
+  bool _episodeExitInProgress = false;
+  bool _episodePopAllowed = false;
   Map<String, dynamic>? _series;
   List<dynamic> _episodes = [];
 
   bool get _isForYou => widget.scene == NativeVideoScene.forYou;
+  bool get _iosPlaybackProgressEnabled => !kIsWeb && Platform.isIOS;
 
   @override
   void initState() {
     super.initState();
+    _playbackProgressStore = PlaybackProgressStore(Global.sp);
     _loadInitial();
   }
 
@@ -161,6 +169,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       _syncGeneration++;
       unawaited(_syncWindow(_current, _syncGeneration));
     } else {
+      unawaited(_persistPlaybackProgress(_current));
       _syncGeneration++;
       unawaited(_suspendPlayback());
     }
@@ -170,6 +179,48 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     return oldWidget.scene != widget.scene ||
         oldWidget.movieId != widget.movieId ||
         _watchToRouteKey(oldWidget.watchTo) != _watchToRouteKey(widget.watchTo);
+  }
+
+  String _playbackUid() {
+    final stateUid = context.read<UserState>().state?.uid.trim() ?? '';
+    return stateUid.isNotEmpty
+        ? stateUid
+        : (Global.sp.getString('uid') ?? '').trim();
+  }
+
+  String _playbackMovieId(Map<String, dynamic> item) {
+    return _text(
+      item['movie_id'] ?? item['movieId'] ?? item['moveId'] ?? item['id'],
+    );
+  }
+
+  String _playbackEpisodeId(Map<String, dynamic> item) {
+    return _text(item['ep_id'] ?? item['epId']);
+  }
+
+  String _playbackItemIdentity(Map<String, dynamic> item) {
+    return '${_playbackMovieId(item)}:${_playbackEpisodeId(item)}';
+  }
+
+  int? _cachedPlaybackSeconds(Map<String, dynamic> item) {
+    if (!_iosPlaybackProgressEnabled) {
+      return null;
+    }
+    return _playbackProgressStore.readSeconds(
+      uid: _playbackUid(),
+      movieId: _playbackMovieId(item),
+      episodeId: _playbackEpisodeId(item),
+    );
+  }
+
+  Map<String, dynamic> _withIosPlaybackPosition(Map<String, dynamic> item) {
+    if (!_iosPlaybackProgressEnabled) {
+      return item;
+    }
+    return {
+      ...item,
+      'initial_position_ms': (_cachedPlaybackSeconds(item) ?? 0) * 1000,
+    };
   }
 
   Future<void> _loadForYou({
@@ -230,10 +281,11 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         _videoRequests.clear();
         _batchRequests.clear();
         _batchNoVideoIds.clear();
+        _completedPlaybackItems.clear();
         _items.clear();
         _current = 0;
       }
-      _items.addAll(rows.map(_normalizeFeedItem));
+      _items.addAll(rows.map(_normalizeFeedItem).map(_withIosPlaybackPosition));
       _nextForYouPage = (responsePage > 0 ? responsePage : page) + 1;
       _hasMore = hasMore;
       _loadingMore = false;
@@ -257,8 +309,9 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     final tags = data['tags'] is List ? data['tags'] as List : [];
     final items = episodes.map((episode) {
       final ep = _asMap(episode);
-      return <String, dynamic>{
+      final item = <String, dynamic>{
         'id': info['id'] ?? id,
+        'movie_id': info['id'] ?? id,
         'ep_id': ep['id'],
         'episode': ep['episode'],
         'total_episodes': episodes.length,
@@ -275,8 +328,11 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         'unlock_coins': ep['unlock_coins'] ?? ep['unlockCoins'],
         'video': _initialVideoForEpisode(ep, ep['video']),
         'subtitle': ep['subtitle_url'] ?? ep['subtitle'],
-        'initial_position_ms': _initialPositionForEpisode(ep),
       };
+      item['initial_position_ms'] = _iosPlaybackProgressEnabled
+          ? (_cachedPlaybackSeconds(item) ?? 0) * 1000
+          : _initialPositionForEpisode(ep);
+      return item;
     }).toList();
 
     if (!mounted) {
@@ -289,6 +345,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       _videoRequests.clear();
       _batchRequests.clear();
       _batchNoVideoIds.clear();
+      _completedPlaybackItems.clear();
       _items
         ..clear()
         ..addAll(items);
@@ -370,6 +427,105 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     return carriedVideo.isNotEmpty ? carriedVideo : _text(fallback);
   }
 
+  Future<void> _persistPlaybackProgress(
+    int index, {
+    bool completed = false,
+  }) async {
+    if (!_iosPlaybackProgressEnabled || index < 0 || index >= _items.length) {
+      return;
+    }
+    final controller = _controllers[index];
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    final item = Map<String, dynamic>.from(_items[index]);
+    final identity = _playbackItemIdentity(item);
+    final shouldRestart =
+        completed ||
+        _completedPlaybackItems.contains(identity) ||
+        controller.value.isCompleted;
+    final seconds = shouldRestart ? 0 : controller.value.position.inSeconds;
+    final uid = _playbackUid();
+    final movieId = _playbackMovieId(item);
+    final episodeId = _playbackEpisodeId(item);
+    final saved = await _playbackProgressStore.writeSeconds(
+      uid: uid,
+      movieId: movieId,
+      episodeId: episodeId,
+      seconds: seconds,
+    );
+    if (!saved) {
+      return;
+    }
+    if (index < _items.length &&
+        _playbackItemIdentity(_items[index]) == identity) {
+      _items[index]['initial_position_ms'] = seconds * 1000;
+    }
+    Global.logger.d(
+      'ios playback progress saved movie=$movieId episode=$episodeId seconds=$seconds',
+    );
+  }
+
+  void _handleVideoEnded(int index) {
+    if (index >= 0 && index < _items.length) {
+      _completedPlaybackItems.add(_playbackItemIdentity(_items[index]));
+      unawaited(_persistPlaybackProgress(index, completed: true));
+    }
+    _playNext(index);
+  }
+
+  Future<void> _openEpisodePageFromForYou(int index) async {
+    if (index < 0 || index >= _items.length) {
+      return;
+    }
+    await _persistPlaybackProgress(index);
+    await _pauseAndReleaseForNavigation(index);
+    if (!mounted || index >= _items.length) {
+      return;
+    }
+    final id = _intValue(_items[index]['id']);
+    final playbackPositionMs =
+        _controllers[index]?.value.position.inMilliseconds ?? 0;
+    context.push(
+      '/play',
+      extra: {
+        'id': id,
+        'watchTo': {
+          'episode': _items[index]['episode'],
+          'episode_id': _items[index]['ep_id'],
+          'video': _items[index]['video'],
+          'subtitle': _items[index]['subtitle'],
+          'position_ms': playbackPositionMs,
+        },
+      },
+    );
+  }
+
+  void _handleOpenEpisodePage(int index, int playbackPositionMs) {
+    if (_iosPlaybackProgressEnabled) {
+      unawaited(_openEpisodePageFromForYou(index));
+      return;
+    }
+    if (index < 0 || index >= _items.length) {
+      return;
+    }
+    final id = _intValue(_items[index]['id']);
+    unawaited(_pauseAndReleaseForNavigation(index));
+    context.push(
+      '/play',
+      extra: {
+        'id': id,
+        'watchTo': {
+          'episode': _items[index]['episode'],
+          'episode_id': _items[index]['ep_id'],
+          'video': _items[index]['video'],
+          'subtitle': _items[index]['subtitle'],
+          'position_ms': playbackPositionMs,
+        },
+      },
+    );
+  }
+
   void _onPageChanged(int index) {
     final previous = _current;
     if (widget.scene == NativeVideoScene.episode &&
@@ -384,6 +540,12 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         }
       });
       return;
+    }
+    if (index != previous) {
+      unawaited(_persistPlaybackProgress(previous));
+      if (index >= 0 && index < _items.length) {
+        _completedPlaybackItems.remove(_playbackItemIdentity(_items[index]));
+      }
     }
     _syncGeneration++;
     setState(() => _current = index);
@@ -427,6 +589,11 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         index > firstLocked) {
       Global.warning(t.watch_unlock_video_miss_tips);
       return;
+    }
+    final previous = _current;
+    if (index != previous) {
+      unawaited(_persistPlaybackProgress(previous));
+      _completedPlaybackItems.remove(_playbackItemIdentity(item));
     }
     _pageController.jumpToPage(index);
     setState(() => _current = index);
@@ -583,6 +750,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
         Uri.parse(Global.static(video)),
       );
       await controller.initialize();
+      await _applyIosPlaybackPosition(index, controller);
       await controller.setLooping(_isForYou);
       await _setControllerAudible(controller, false);
       if (!mounted) {
@@ -958,6 +1126,25 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     await controller.setVolume(!kIsWeb && audible ? 1 : 0);
   }
 
+  Future<void> _applyIosPlaybackPosition(
+    int index,
+    VideoPlayerController controller,
+  ) async {
+    if (!_iosPlaybackProgressEnabled || index < 0 || index >= _items.length) {
+      return;
+    }
+    final positionMs = _intValue(_items[index]['initial_position_ms']);
+    if (positionMs <= 0) {
+      return;
+    }
+    final target = Duration(milliseconds: positionMs);
+    final duration = controller.value.duration;
+    if (duration.inMilliseconds > 0 && target >= duration) {
+      return;
+    }
+    await controller.seekTo(target);
+  }
+
   Future<void> _pauseAndReleaseForNavigation(int keepIndex) async {
     for (final controller in _controllers.values) {
       await VideoPlaybackSession.pause(controller);
@@ -1009,114 +1196,153 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     _busyIndexes.clear();
   }
 
+  void _requestEpisodeExit() {
+    if (!_iosPlaybackProgressEnabled) {
+      _finishEpisodeExit();
+      return;
+    }
+    unawaited(_persistAndExitEpisodePage());
+  }
+
+  Future<void> _persistAndExitEpisodePage() async {
+    if (_episodeExitInProgress) {
+      return;
+    }
+    _episodeExitInProgress = true;
+    await _persistPlaybackProgress(_current);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _episodePopAllowed = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _finishEpisodeExit();
+      }
+    });
+  }
+
+  void _finishEpisodeExit() {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/');
+  }
+
+  Widget _withEpisodeExitHandling(Widget child) {
+    if (_isForYou || !_iosPlaybackProgressEnabled) {
+      return child;
+    }
+    return PopScope(
+      canPop: _episodePopAllowed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _requestEpisodeExit();
+        }
+      },
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return Scaffold(backgroundColor: Colors.black, body: _VideoLoading());
+      return _withEpisodeExitHandling(
+        Scaffold(backgroundColor: Colors.black, body: _VideoLoading()),
+      );
     }
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: _items.isEmpty
-          ? Center(
-              child: Text(
-                t.no_content,
-                style: TextStyle(color: Colors.white54),
-              ),
-            )
-          : RefreshIndicator(
-              onRefresh: _isForYou
-                  ? () => _loadForYou(refresh: true, requestRefresh: true)
-                  : _loadSeries,
-              color: Color(0xffff3d5d),
-              backgroundColor: Color(0xff222222),
-              child: Stack(
-                children: [
-                  PageView.builder(
-                    controller: _pageController,
-                    scrollDirection: Axis.vertical,
-                    physics: const _VideoFeedScrollPhysics(
-                      parent: BouncingScrollPhysics(),
-                    ),
-                    itemCount: _items.length,
-                    onPageChanged: _onPageChanged,
-                    itemBuilder: (context, index) {
-                      final active = index == _current;
-                      return NativeVideoPage(
-                        key: ValueKey(
-                          '${widget.scene}-${_items[index]['ep_id']}-$index',
-                        ),
-                        scene: widget.scene,
-                        item: _items[index],
-                        series: _series,
-                        episodes: _episodes,
-                        active: widget.active && active,
-                        index: index,
-                        controller: _controllers[index],
-                        controllerLoading: _busyIndexes.contains(index),
-                        onPrepare: ({bool autoUnlock = false}) => _prepareIndex(
-                          index,
-                          autoplay: index == _current,
-                          autoUnlock: autoUnlock,
-                        ),
-                        onPatch: (patch) => _patchItem(index, patch),
-                        onEnded: () => _playNext(index),
-                        onOpenEpisodePage: (playbackPositionMs) {
-                          final id = _intValue(_items[index]['id']);
-                          unawaited(_pauseAndReleaseForNavigation(index));
-                          context.push(
-                            '/play',
-                            extra: {
-                              'id': id,
-                              'watchTo': {
-                                'episode': _items[index]['episode'],
-                                'episode_id': _items[index]['ep_id'],
-                                'video': _items[index]['video'],
-                                'subtitle': _items[index]['subtitle'],
-                                'position_ms': playbackPositionMs,
-                              },
-                            },
-                          );
-                        },
-                        onSelectEpisode: _selectEpisode,
-                        onChromeVisibilityChanged: _isForYou && active
-                            ? (visible) {
-                                if (_forYouChromeVisible == visible ||
-                                    !mounted) {
-                                  return;
+    return _withEpisodeExitHandling(
+      Scaffold(
+        backgroundColor: Colors.black,
+        body: _items.isEmpty
+            ? Center(
+                child: Text(
+                  t.no_content,
+                  style: TextStyle(color: Colors.white54),
+                ),
+              )
+            : RefreshIndicator(
+                onRefresh: _isForYou
+                    ? () => _loadForYou(refresh: true, requestRefresh: true)
+                    : _loadSeries,
+                color: Color(0xffff3d5d),
+                backgroundColor: Color(0xff222222),
+                child: Stack(
+                  children: [
+                    PageView.builder(
+                      controller: _pageController,
+                      scrollDirection: Axis.vertical,
+                      physics: const _VideoFeedScrollPhysics(
+                        parent: BouncingScrollPhysics(),
+                      ),
+                      itemCount: _items.length,
+                      onPageChanged: _onPageChanged,
+                      itemBuilder: (context, index) {
+                        final active = index == _current;
+                        return NativeVideoPage(
+                          key: ValueKey(
+                            '${widget.scene}-${_items[index]['ep_id']}-$index',
+                          ),
+                          scene: widget.scene,
+                          item: _items[index],
+                          series: _series,
+                          episodes: _episodes,
+                          active: widget.active && active,
+                          index: index,
+                          controller: _controllers[index],
+                          controllerLoading: _busyIndexes.contains(index),
+                          onPrepare: ({bool autoUnlock = false}) =>
+                              _prepareIndex(
+                                index,
+                                autoplay: index == _current,
+                                autoUnlock: autoUnlock,
+                              ),
+                          onPatch: (patch) => _patchItem(index, patch),
+                          onEnded: () => _handleVideoEnded(index),
+                          onOpenEpisodePage: (playbackPositionMs) =>
+                              _handleOpenEpisodePage(index, playbackPositionMs),
+                          onSelectEpisode: _selectEpisode,
+                          onCloseEpisodePage: _requestEpisodeExit,
+                          onChromeVisibilityChanged: _isForYou && active
+                              ? (visible) {
+                                  if (_forYouChromeVisible == visible ||
+                                      !mounted) {
+                                    return;
+                                  }
+                                  setState(() {
+                                    _forYouChromeVisible = visible;
+                                  });
                                 }
-                                setState(() {
-                                  _forYouChromeVisible = visible;
-                                });
-                              }
-                            : null,
-                      );
-                    },
-                  ),
-                  if (_isForYou && _forYouChromeVisible)
-                    PositionedDirectional(
-                      top: MediaQuery.of(context).padding.top,
-                      end: 15,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => context.push('/search'),
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: SvgPicture.asset(
-                            'assets/images/android/ic_search_home.svg',
+                              : null,
+                        );
+                      },
+                    ),
+                    if (_isForYou && _forYouChromeVisible)
+                      PositionedDirectional(
+                        top: MediaQuery.of(context).padding.top,
+                        end: 15,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => context.push('/search'),
+                          child: SizedBox(
                             width: 24,
                             height: 24,
-                            colorFilter: const ColorFilter.mode(
-                              Colors.white,
-                              BlendMode.srcIn,
+                            child: SvgPicture.asset(
+                              'assets/images/android/ic_search_home.svg',
+                              width: 24,
+                              height: 24,
+                              colorFilter: const ColorFilter.mode(
+                                Colors.white,
+                                BlendMode.srcIn,
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
+      ),
     );
   }
 }
@@ -1200,6 +1426,7 @@ class NativeVideoPage extends StatefulWidget {
     required this.onEnded,
     required this.onOpenEpisodePage,
     required this.onSelectEpisode,
+    required this.onCloseEpisodePage,
     this.onChromeVisibilityChanged,
   });
 
@@ -1216,6 +1443,7 @@ class NativeVideoPage extends StatefulWidget {
   final VoidCallback onEnded;
   final ValueChanged<int> onOpenEpisodePage;
   final ValueChanged<int> onSelectEpisode;
+  final VoidCallback onCloseEpisodePage;
   final ValueChanged<bool>? onChromeVisibilityChanged;
 
   @override
@@ -1289,11 +1517,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   }
 
   void _closeEpisodePage() {
-    if (context.canPop()) {
-      context.pop();
-      return;
-    }
-    context.go('/');
+    widget.onCloseEpisodePage();
   }
 
   void _resetLockedStateForNewItem() {
@@ -1543,7 +1767,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
         _captionText = captionText;
       });
     }
-    if (!_reportedWatch && controller.value.isPlaying && seconds >= 5) {
+    if (!_reportedWatch && controller.value.isPlaying) {
       _reportedWatch = true;
       _reportWatchProgress();
     }
@@ -1553,11 +1777,11 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     }
   }
 
-  void _reportWatchProgress() {
+  Future<void> _reportWatchProgress() async {
     if (!widget.active) {
       return;
     }
-    api<dynamic>(
+    final result = await api<dynamic>(
       'movie/history/report',
       method: Method.post,
       data: {
@@ -1569,6 +1793,10 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       },
       loading: false,
     );
+    if (result.c == 0) {
+      await Global.sp.setBool('update_history', true);
+      Global.watchHistoryUpdates.value++;
+    }
   }
 
   void _startAutoHide({bool showCenterButton = false}) {
@@ -2261,7 +2489,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     try {
       payResult = await showVipPayBottomSheet(
         context,
-        episodeCoins: unlockCoins.toString(),
+        episodeCoins: _isEpisode ? unlockCoins.toString() : null,
       );
       if (!mounted || !widget.active) {
         return;
@@ -2302,7 +2530,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     try {
       payResult = await showVipPayBottomSheet(
         context,
-        episodeCoins: unlockCoins.toString(),
+        episodeCoins: _isEpisode ? unlockCoins.toString() : null,
       );
     } finally {
       _videoPaySheetOpen = false;
@@ -4462,8 +4690,9 @@ class _VideoRetentionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final headerHeight = isStep3 ? 82.0 : (step == 2 ? 82.0 : 64.0);
     return SizedBox(
-      height: isStep3 ? 82 : 64,
+      height: headerHeight,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
@@ -5117,7 +5346,7 @@ class _CoinUnlockSheetState extends State<_CoinUnlockSheet> {
                     child: Row(
                       children: [
                         _CoinUnlockValue(
-                          label: t.this_episode,
+                          label: t.episode_unlock_price,
                           value: widget.unlockCoins.toString(),
                         ),
                         SizedBox(width: 12),

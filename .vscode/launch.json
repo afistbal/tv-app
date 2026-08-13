@@ -2,6 +2,19 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "YogoShort iOS Web Preview",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "web-server",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--web-hostname=localhost",
+        "--web-port=8084",
+        "--dart-define=YOGO_WEB_PREVIEW=true",
+        "--dart-define=API_VERBOSE_LOGS=true"
+      ]
+    },
+    {
       "name": "YogoShort iOS Debug",
       "request": "launch",
       "type": "dart",

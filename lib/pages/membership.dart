@@ -31,7 +31,7 @@ enum VipPayResult { vip, coins }
 
 Future<VipPayResult?> showVipPayBottomSheet(
   BuildContext context, {
-  String episodeCoins = '0',
+  String? episodeCoins,
 }) {
   return showModalBottomSheet<VipPayResult>(
     context: context,
@@ -407,7 +407,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                                   SizedBox(height: 2),
                                   ..._subscriptions.map(
                                     (item) => Padding(
-                                      padding: EdgeInsets.only(bottom: 12),
+                                      padding: EdgeInsets.only(bottom: 8),
                                       child: _VipPlanCard(
                                         item: item,
                                         selected:
@@ -418,6 +418,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                                       ),
                                     ),
                                   ),
+                                  _AutoRenewalHint(),
                                 ],
                                 if (_isVip) ...[
                                   SizedBox(height: 14),
@@ -435,41 +436,6 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
                             ),
                           ),
                         ),
-                        if (!_isVip)
-                          SafeArea(
-                            top: false,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Padding(
-                                  padding: EdgeInsets.symmetric(
-                                    horizontal: 15,
-                                    vertical: 8,
-                                  ),
-                                  child: Text(
-                                    t.cancel_auto_renewal_anytime,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: Color(0xff999999),
-                                      fontSize: 14,
-                                      height: 1.2,
-                                    ),
-                                  ),
-                                ),
-                                if (!kIsWeb && Platform.isIOS)
-                                  TextButton(
-                                    onPressed: _handleRestore,
-                                    child: Text(
-                                      t.restore_purchases,
-                                      style: TextStyle(
-                                        color: Color(0xff999999),
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
                       ],
                     ),
             ),
@@ -483,7 +449,7 @@ class _MembershipState extends State<Membership> with WidgetsBindingObserver {
 class _VipPaySheet extends StatefulWidget {
   const _VipPaySheet({required this.episodeCoins, this.fullPage = false});
 
-  final String episodeCoins;
+  final String? episodeCoins;
   final bool fullPage;
 
   @override
@@ -778,7 +744,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
                                 SizedBox(height: 12),
                                 ..._subscriptions.map(
                                   (item) => Padding(
-                                    padding: EdgeInsets.only(bottom: 12),
+                                    padding: EdgeInsets.only(bottom: 8),
                                     child: _VipPlanCard(
                                       item: item,
                                       selected: _productId(item) == _selectedId,
@@ -786,6 +752,7 @@ class _VipPaySheetState extends State<_VipPaySheet> {
                                     ),
                                   ),
                                 ),
+                                _AutoRenewalHint(),
                               ],
                               if (_coins.isNotEmpty) ...[
                                 if (!isVip && _subscriptions.isNotEmpty)
@@ -844,7 +811,7 @@ class _VipPayBalanceRow extends StatelessWidget {
     required this.onClose,
   });
 
-  final String episodeCoins;
+  final String? episodeCoins;
   final String balance;
   final VoidCallback onClose;
 
@@ -854,22 +821,24 @@ class _VipPayBalanceRow extends StatelessWidget {
       height: 60,
       child: Row(
         children: [
-          Text(
-            t.this_episode,
-            style: TextStyle(color: Color(0xff999999), fontSize: 14),
-          ),
-          SizedBox(width: 4),
-          Image.asset('assets/images/android/ic_coin.png', width: 14),
-          SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              episodeCoins,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: Colors.white, fontSize: 14),
+          if (episodeCoins != null) ...[
+            Text(
+              t.episode_unlock_price,
+              style: TextStyle(color: Color(0xff999999), fontSize: 14),
             ),
-          ),
-          SizedBox(width: 12),
+            SizedBox(width: 4),
+            Image.asset('assets/images/android/ic_coin.png', width: 14),
+            SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                episodeCoins!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ),
+            SizedBox(width: 12),
+          ],
           Text(
             t.balance,
             style: TextStyle(color: Color(0xff999999), fontSize: 14),
@@ -1131,12 +1100,16 @@ class _VipPlanCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = _productTitle(item);
     final basePlan = _planId(item);
+    final title = switch (basePlan) {
+      'weekly' => t.weekly_vip,
+      'yearly' => t.yearly_vip,
+      _ => _productTitle(item),
+    };
     final price = _text(item['price']);
     final firstPrice = _text(item['first_price'] ?? item['firstPrice']);
     final appleEligibility = item['_apple_intro_eligible'];
-    final isOfferEligible = appleEligibility == true;
+    final isOfferEligible = appleEligibility == true || Global.webPreview;
     final hasOffer =
         (basePlan == 'weekly' || basePlan == 'yearly') &&
         isOfferEligible &&
@@ -1146,18 +1119,14 @@ class _VipPlanCard extends StatelessWidget {
     final displayPrice = hasOffer ? firstPrice : price;
     final bonusValue = _bonusValue(item);
     final showTimedOffer = hasOffer && basePlan == 'weekly';
-    final discountPercent = showTimedOffer
-        ? _discountPercent(firstPrice, price)
-        : 0;
     final badgeText = !hasOffer && bonusValue > 0
         ? '+${(bonusValue * 100).toInt()}%'
         : '';
-    final description = showTimedOffer
-        ? t.first_week_string_then_string_week(
-            s: _moneyParam(firstPrice),
-            s2: _moneyParam(price),
-          )
-        : t.auto_renewal_cancel_anytime;
+    final description = switch (basePlan) {
+      'weekly' => t.shopping_vip_weekly_subtitle,
+      'yearly' => t.shopping_vip_yearly_subtitle,
+      _ => t.auto_renewal_cancel_anytime,
+    };
 
     final bgGradient = selected
         ? [Color(0xffffecd4), Color(0xfff3cb93)]
@@ -1168,6 +1137,50 @@ class _VipPlanCard extends StatelessWidget {
         : Colors.white.withAlpha(190);
     final benefitColor = selected ? Color(0xff633e25) : Color(0xfff1da97);
     final benefitSuffix = selected ? '0' : '1';
+    final priceStack = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          constraints: BoxConstraints(minWidth: 72),
+          padding: EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            gradient: selected
+                ? LinearGradient(colors: [Color(0xffc17846), Color(0xff603c24)])
+                : null,
+            color: selected ? null : Color(0xff3a342f),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            _moneyParam(displayPrice),
+            style: TextStyle(
+              color: selected ? Colors.white : Color(0xfff1da97),
+              fontSize: 15,
+              fontWeight: FontWeight.w400,
+              height: 1,
+            ),
+          ),
+        ),
+        if (hasOffer) ...[
+          SizedBox(height: 4),
+          Text(
+            _moneyParam(price),
+            style: TextStyle(
+              color: selected
+                  ? Color(0xff633e25).withAlpha(210)
+                  : Colors.white.withAlpha(230),
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              height: 1,
+              decoration: TextDecoration.lineThrough,
+              decorationColor: selected
+                  ? Color(0xff633e25).withAlpha(210)
+                  : Colors.white.withAlpha(230),
+            ),
+          ),
+        ],
+      ],
+    );
 
     return Material(
       color: Colors.transparent,
@@ -1183,121 +1196,143 @@ class _VipPlanCard extends StatelessWidget {
             children: [
               PositionedDirectional(
                 top: 0,
+                bottom: 0,
                 end: 0,
                 child: Opacity(
                   opacity: selected ? 1 : 0.1,
-                  child: Image.asset(
-                    'assets/images/android/img_weekly_price_right.png',
-                    width: 200,
-                    fit: BoxFit.contain,
+                  child: SizedBox(
+                    width: 210,
+                    child: Image.asset(
+                      'assets/images/android/img_weekly_price_right.png',
+                      fit: BoxFit.fitHeight,
+                      alignment: Alignment.centerRight,
+                    ),
                   ),
                 ),
               ),
-              Column(
-                children: [
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(15, 22, 15, 22),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+              ConstrainedBox(
+                constraints: BoxConstraints(minHeight: 150),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: 88),
+                        child: Stack(
+                          children: [
+                            Padding(
+                              padding: EdgeInsetsDirectional.fromSTEB(
+                                16,
+                                18,
+                                110,
+                                10,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: textColor,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  SizedBox(height: 7),
+                                  Text(
+                                    description,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: subColor,
+                                      fontSize: 11,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (showTimedOffer)
+                              PositionedDirectional(
+                                top: 28,
+                                end: 14,
+                                child: priceStack,
+                              )
+                            else
+                              PositionedDirectional(
+                                top: 0,
+                                bottom: 0,
+                                end: 14,
+                                child: Center(child: priceStack),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: selected ? Color(0x29fff4e5) : Color(0x594e4e4e),
+                        borderRadius: BorderRadius.vertical(
+                          bottom: Radius.circular(12),
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
                             children: [
-                              Text(
-                                title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: textColor,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
+                              Expanded(
+                                child: _PlanBenefit(
+                                  asset: 'ic_benefit_short_$benefitSuffix.svg',
+                                  text: t.unlimited_viewing,
+                                  color: benefitColor,
                                 ),
                               ),
-                              SizedBox(height: 8),
-                              Text(
-                                description,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: subColor,
-                                  fontSize: 12,
-                                  height: 1.2,
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: _PlanBenefit(
+                                  asset: 'ic_benefit_ad_$benefitSuffix.svg',
+                                  text: t.ad_free,
+                                  color: benefitColor,
                                 ),
                               ),
                             ],
                           ),
-                        ),
-                        SizedBox(width: 12),
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 4,
+                          SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _PlanBenefit(
+                                  asset: 'ic_benefit_hd_$benefitSuffix.svg',
+                                  text: t.hd_quality,
+                                  color: benefitColor,
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: _PlanBenefit(
+                                  asset:
+                                      'ic_benefit_benefit_$benefitSuffix.svg',
+                                  text: t.more_benefits,
+                                  color: benefitColor,
+                                ),
+                              ),
+                            ],
                           ),
-                          decoration: BoxDecoration(
-                            gradient: selected
-                                ? LinearGradient(
-                                    colors: [
-                                      Color(0xffc17846),
-                                      Color(0xff603c24),
-                                    ],
-                                  )
-                                : null,
-                            color: selected ? null : Color(0xff3a342f),
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                          child: Text(
-                            '\$$displayPrice',
-                            style: TextStyle(
-                              color: selected
-                                  ? Colors.white
-                                  : Color(0xfff1da97),
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    width: double.infinity,
-                    padding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: selected ? Color(0x29fff4e5) : Color(0x594e4e4e),
-                      borderRadius: BorderRadius.vertical(
-                        bottom: Radius.circular(12),
+                        ],
                       ),
                     ),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 10,
-                      children: [
-                        _PlanBenefit(
-                          asset: 'ic_benefit_short_$benefitSuffix.svg',
-                          text: t.unlimited_viewing,
-                          color: benefitColor,
-                        ),
-                        _PlanBenefit(
-                          asset: 'ic_benefit_hd_$benefitSuffix.svg',
-                          text: t.hd_quality,
-                          color: benefitColor,
-                        ),
-                        _PlanBenefit(
-                          asset: 'ic_benefit_ad_$benefitSuffix.svg',
-                          text: t.ad_free,
-                          color: benefitColor,
-                        ),
-                        _PlanBenefit(
-                          asset: 'ic_benefit_benefit_$benefitSuffix.svg',
-                          text: t.more_benefits,
-                          color: benefitColor,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              if (discountPercent > 0 || badgeText.isNotEmpty)
+              if (showTimedOffer || badgeText.isNotEmpty)
                 PositionedDirectional(
                   top: 0,
                   end: 0,
@@ -1337,6 +1372,28 @@ class _VipPlanCard extends StatelessWidget {
   }
 }
 
+class _AutoRenewalHint extends StatelessWidget {
+  const _AutoRenewalHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: 4),
+      child: Center(
+        child: Text(
+          t.shopping_coins_section_renew_hint,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.white.withAlpha(215),
+            fontSize: 13,
+            height: 1.2,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PlanBenefit extends StatelessWidget {
   const _PlanBenefit({
     required this.asset,
@@ -1350,26 +1407,19 @@ class _PlanBenefit extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: (MediaQuery.of(context).size.width - 30 - 30 - 8) / 2,
-      child: Row(
-        children: [
-          SvgPicture.asset(
-            'assets/images/android/$asset',
-            width: 16,
-            height: 16,
+    return Row(
+      children: [
+        SvgPicture.asset('assets/images/android/$asset', width: 16, height: 16),
+        SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color, fontSize: 10, height: 1.25),
           ),
-          SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 10),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -1433,14 +1483,15 @@ class _OfferCountdownBadgeState extends State<_OfferCountdownBadge> {
         .padLeft(2, '0');
 
     return Container(
-      padding: EdgeInsetsDirectional.only(start: 11, end: 9, top: 3, bottom: 3),
+      constraints: BoxConstraints(minWidth: 88, minHeight: 24),
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [Color(0xfffd36bc), Color(0xfffd3a5a)],
         ),
         borderRadius: BorderRadiusDirectional.only(
           topEnd: Radius.circular(12),
-          bottomStart: Radius.circular(12),
+          bottomStart: Radius.circular(9),
         ),
       ),
       child: Row(
@@ -1452,16 +1503,21 @@ class _OfferCountdownBadgeState extends State<_OfferCountdownBadge> {
   <path d="M7.93 0.991C11.762 0.991 14.868 4.098 14.868 7.93C14.868 11.762 11.762 14.868 7.93 14.868C4.098 14.868 0.991 11.762 0.991 7.93C0.991 4.098 4.098 0.991 7.93 0.991ZM10.257 2.48C7.242 1.207 3.767 2.618 2.493 5.633C1.22 8.648 2.632 12.124 5.646 13.398C8.661 14.67 12.137 13.259 13.41 10.244C13.562 9.885 13.677 9.511 13.756 9.129C14.323 6.362 12.859 3.579 10.257 2.48ZM7.92 3.472C8.193 3.472 8.415 3.693 8.415 3.967V7.723L11.245 10.554C11.438 10.747 11.438 11.061 11.245 11.254C11.052 11.447 10.738 11.447 10.545 11.254L7.425 8.133V3.967C7.425 3.693 7.646 3.472 7.92 3.472Z" fill="white"/>
 </svg>
 ''',
-            width: 16,
-            height: 16,
+            width: 14,
+            height: 14,
           ),
           SizedBox(width: 4),
-          Text(
-            '$minutes:$seconds',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
+          SizedBox(
+            width: 58,
+            child: Text(
+              '$minutes:$seconds',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                height: 1,
+              ),
             ),
           ),
         ],
@@ -1954,15 +2010,6 @@ String _moneyValue(String value) {
 
 double _moneyNumber(String value) {
   return double.tryParse(value.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0;
-}
-
-int _discountPercent(String price, String renewalPrice) {
-  final p = _moneyNumber(price);
-  final r = _moneyNumber(renewalPrice);
-  if (p <= 0 || r <= 0 || p >= r) {
-    return 0;
-  }
-  return (100 - (p / r * 100).floor()).clamp(0, 99).toInt();
 }
 
 String _cleanNumber(dynamic value) {

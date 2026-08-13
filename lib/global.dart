@@ -30,6 +30,7 @@ class Global {
     'yogotv.com/device',
   );
   static final GlobalKey appKey = GlobalKey();
+  static final ValueNotifier<int> watchHistoryUpdates = ValueNotifier<int>(0);
   static final Logger logger = Logger(level: Level.debug);
   static final int time = DateTime.now().millisecondsSinceEpoch;
   static late final SharedPreferences sp;

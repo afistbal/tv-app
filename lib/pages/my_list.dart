@@ -43,9 +43,16 @@ class _MyListState extends State<MyList>
   @override
   void didUpdateWidget(covariant MyList oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.load && !_load) {
-      setState(() {
-        _load = true;
+    if (widget.load && !oldWidget.load) {
+      if (!_load) {
+        setState(() {
+          _load = true;
+        });
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.load) {
+          _currentContent?.refreshFromServer();
+        }
       });
     }
   }
@@ -309,6 +316,7 @@ class _MyListContentState extends State<_MyListContent>
   int _page = 0;
   bool _more = true;
   bool _requesting = false;
+  bool _refreshPending = false;
   bool _managing = false;
   int _requestGeneration = 0;
 
@@ -318,6 +326,10 @@ class _MyListContentState extends State<_MyListContent>
   bool get isEmpty => _items.isEmpty;
 
   void refreshFromServer() {
+    if (_requesting) {
+      _refreshPending = true;
+      return;
+    }
     _load(page: 1, refresh: true);
   }
 
@@ -326,14 +338,25 @@ class _MyListContentState extends State<_MyListContent>
     super.initState();
     _scrollController = ScrollController();
     _scrollController.addListener(_onScroll);
+    if (widget.history) {
+      Global.watchHistoryUpdates.addListener(_handleHistoryUpdate);
+    }
     _load(page: 1);
   }
 
   @override
   void dispose() {
+    if (widget.history) {
+      Global.watchHistoryUpdates.removeListener(_handleHistoryUpdate);
+    }
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleHistoryUpdate() {
+    Global.sp.remove('update_history');
+    refreshFromServer();
   }
 
   void _onScroll() {
@@ -472,6 +495,7 @@ class _MyListContentState extends State<_MyListContent>
         _requesting = false;
         _more = false;
       });
+      _runPendingRefresh();
       return;
     }
 
@@ -495,6 +519,19 @@ class _MyListContentState extends State<_MyListContent>
       _page = nextPage;
       _more = more;
       _requesting = false;
+    });
+    _runPendingRefresh();
+  }
+
+  void _runPendingRefresh() {
+    if (!_refreshPending || !mounted) {
+      return;
+    }
+    _refreshPending = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _load(page: 1, refresh: true);
+      }
     });
   }
 

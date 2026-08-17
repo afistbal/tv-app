@@ -20,6 +20,7 @@ import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/movie_id.dart';
 import 'package:yogotv/pages/membership.dart';
 import 'package:yogotv/playback_progress_store.dart';
 import 'package:yogotv/purchase.dart';
@@ -44,6 +45,36 @@ class _VideoLoading extends StatelessWidget {
         height: 42,
         fit: BoxFit.contain,
         gaplessPlayback: true,
+      ),
+    );
+  }
+}
+
+class _VideoLoadFailed extends StatelessWidget {
+  const _VideoLoadFailed({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onRetry,
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(LucideIcons.refreshCw, color: Colors.white, size: 30),
+              const SizedBox(height: 10),
+              Text(
+                t.failed,
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -88,6 +119,7 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
   static const int _windowRadius = 1;
   static const int _preloadAhead = 2;
   static const Duration _warmPreloadDelay = Duration.zero;
+  static const Duration _videoInitializeTimeout = Duration(seconds: 15);
   static const String _autoUnlockKey = 'auto_unlock_next_episode';
 
   final _pageController = PageController();
@@ -483,7 +515,10 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     if (!mounted || index >= _items.length) {
       return;
     }
-    final id = _intValue(_items[index]['id']);
+    final id = parseMovieId(_items[index]);
+    if (id == null) {
+      return;
+    }
     final playbackPositionMs =
         _controllers[index]?.value.position.inMilliseconds ?? 0;
     context.push(
@@ -509,7 +544,10 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     if (index < 0 || index >= _items.length) {
       return;
     }
-    final id = _intValue(_items[index]['id']);
+    final id = parseMovieId(_items[index]);
+    if (id == null) {
+      return;
+    }
     unawaited(_pauseAndReleaseForNavigation(index));
     context.push(
       '/play',
@@ -561,12 +599,16 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       if (_isForYou) {
         _loadForYou();
       } else {
-        api<dynamic>(
-          'movie/watched',
-          method: Method.post,
-          data: {'id': _items[index]['id']},
-          loading: false,
-        );
+        final movieId = parseMovieId(_items[index]);
+        if (movieId != null) {
+          api<dynamic>(
+            'movie/watched',
+            method: Method.post,
+            data: {'id': movieId},
+            loading: false,
+            showError: false,
+          );
+        }
       }
       return;
     }
@@ -749,8 +791,12 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(Global.static(video)),
       );
-      await controller.initialize();
-      await _applyIosPlaybackPosition(index, controller);
+      try {
+        await controller.initialize().timeout(_videoInitializeTimeout);
+      } catch (_) {
+        await controller.dispose();
+        rethrow;
+      }
       await controller.setLooping(_isForYou);
       await _setControllerAudible(controller, false);
       if (!mounted) {
@@ -1126,25 +1172,6 @@ class _NativeVideoFeedState extends State<NativeVideoFeed> {
     await controller.setVolume(!kIsWeb && audible ? 1 : 0);
   }
 
-  Future<void> _applyIosPlaybackPosition(
-    int index,
-    VideoPlayerController controller,
-  ) async {
-    if (!_iosPlaybackProgressEnabled || index < 0 || index >= _items.length) {
-      return;
-    }
-    final positionMs = _intValue(_items[index]['initial_position_ms']);
-    if (positionMs <= 0) {
-      return;
-    }
-    final target = Duration(milliseconds: positionMs);
-    final duration = controller.value.duration;
-    if (duration.inMilliseconds > 0 && target >= duration) {
-      return;
-    }
-    await controller.seekTo(target);
-  }
-
   Future<void> _pauseAndReleaseForNavigation(int keepIndex) async {
     for (final controller in _controllers.values) {
       await VideoPlaybackSession.pause(controller);
@@ -1456,6 +1483,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   OverlayEntry? _lockedOverlayEntry;
 
   bool _loading = false;
+  bool _prepareFailed = false;
   bool _uiVisible = true;
   bool _playButtonVisible = false;
   bool _centerButtonVisibleByTap = false;
@@ -1523,6 +1551,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   void _resetLockedStateForNewItem() {
     _hideTimer?.cancel();
     _loading = false;
+    _prepareFailed = false;
     _lockedOverlay = false;
     _lockedOverlaySuspended = false;
     _handlingLockedAction = false;
@@ -1609,6 +1638,9 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       _listeningController?.removeListener(_onVideoTick);
     }
     _listeningController = controller;
+    if (controller != null) {
+      _prepareFailed = false;
+    }
     _ended = false;
     _playButtonVisible = false;
     _centerButtonVisibleByTap = false;
@@ -1650,6 +1682,7 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
 
     setState(() {
       _loading = true;
+      _prepareFailed = false;
       _playButtonVisible = false;
       _centerButtonVisibleByTap = false;
       _userPaused = false;
@@ -1662,8 +1695,11 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
       return;
     }
     final locked = result == PrepareResult.locked;
+    final failed =
+        result == PrepareResult.none || result == PrepareResult.error;
     setState(() {
       _loading = false;
+      _prepareFailed = failed;
       _lockedOverlay = locked;
       if (locked) {
         _uiVisible = false;
@@ -1781,17 +1817,22 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     if (!widget.active) {
       return;
     }
+    final movieId = parseMovieId(widget.item);
+    if (movieId == null) {
+      return;
+    }
     final result = await api<dynamic>(
       'movie/history/report',
       method: Method.post,
       data: {
         'type': 'ep_prog',
-        'movie_id': widget.item['id'],
+        'movie_id': movieId,
         'ep_id': widget.item['ep_id'],
         'ep_no': widget.item['episode'],
         'duration': 1,
       },
       loading: false,
+      showError: false,
     );
     if (result.c == 0) {
       await Global.sp.setBool('update_history', true);
@@ -2016,8 +2057,8 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
     final favor = _boolValue(
       widget.item['is_favor'] ?? widget.item['isFavorite'],
     );
-    final movieId = _favoriteMovieId(widget.item);
-    if (movieId.isEmpty) {
+    final movieId = parseMovieId(widget.item);
+    if (movieId == null) {
       return;
     }
     final path = favor ? 'movie/favorite/delete' : 'movie/favorite';
@@ -2054,19 +2095,16 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
   }
 
   Future<void> _share() async {
-    final id = widget.item['id'] ?? widget.item['movie_id'];
+    final id = parseMovieId(widget.item);
     final episode = widget.item['episode'] ?? widget.item['ep_no'];
-    if (_text(id).isEmpty || _text(episode).isEmpty) {
+    if (id == null || _text(episode).isEmpty) {
       return;
     }
 
     final result = await api<dynamic>(
       'share/url',
       method: Method.post,
-      data: {
-        'id': int.tryParse(_text(id)) ?? id,
-        'episode': int.tryParse(_text(episode)) ?? episode,
-      },
+      data: {'id': id, 'episode': int.tryParse(_text(episode)) ?? episode},
       loading: true,
     );
     final payload = result.d;
@@ -3050,6 +3088,8 @@ class _NativeVideoPageState extends State<NativeVideoPage> {
           _VideoSubtitle(text: _captionText, bottom: _isEpisode ? 170 : 180),
         if (_loading)
           const _VideoLoading()
+        else if (_prepareFailed && !videoReady && !_lockedOverlay)
+          _VideoLoadFailed(onRetry: _ensureVideoReady)
         else if (!videoReady && !_lockedOverlay)
           const _VideoLoading(),
         if (!_lockedOverlay && !lockedCoverOnly) ...[
@@ -4326,6 +4366,7 @@ String _androidPairText(String value, int first, int second) {
       .replaceAll(r'%1$s', '$first')
       .replaceAll('%2\$s', '$second')
       .replaceAll(r'%2$s', '$second')
+      .replaceAll(r'$s2', '$second')
       .replaceAll(r'$s', '$first')
       .replaceAll('"', '');
 }
@@ -5510,9 +5551,14 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
     if (_tabScroll || !_scrollController.hasClients) {
       return;
     }
+    final position = _scrollController.position;
+    final isAtBottom =
+        position.pixels >= position.maxScrollExtent - precisionErrorTolerance;
     final rowHeight = _itemExtent(context) + 12;
     final firstRow = (_scrollController.offset / rowHeight).floor();
-    final group = _groupForIndex(firstRow * 6);
+    final group = isAtBottom
+        ? _groupTitles.length - 1
+        : _groupForIndex(firstRow * 6);
     if (group != _selectedGroup && mounted) {
       setState(() => _selectedGroup = group);
     }
@@ -5520,15 +5566,21 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
 
   void _scrollToGroup(int group) {
     final index = (group * _groupSize).clamp(0, widget.episodes.length - 1);
+    final targetOffset = _offsetForIndex(
+      index,
+    ).clamp(0.0, _scrollController.position.maxScrollExtent).toDouble();
     setState(() => _selectedGroup = group);
     _tabScroll = true;
     _scrollController
         .animateTo(
-          _offsetForIndex(index),
+          targetOffset,
           duration: Duration(milliseconds: 180),
           curve: Curves.easeOut,
         )
-        .whenComplete(() => _tabScroll = false);
+        .whenComplete(() {
+          _tabScroll = false;
+          _syncTabFromScroll();
+        });
   }
 
   double _offsetForIndex(int index) {
@@ -5638,7 +5690,7 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
               Expanded(
                 child: GridView.builder(
                   controller: _scrollController,
-                  physics: AlwaysScrollableScrollPhysics(),
+                  physics: ClampingScrollPhysics(),
                   padding: EdgeInsets.symmetric(vertical: 10),
                   itemCount: widget.episodes.length,
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(

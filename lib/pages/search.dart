@@ -9,6 +9,7 @@ import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/movie_id.dart';
 
 class Search extends StatefulWidget {
   const Search({super.key});
@@ -799,8 +800,11 @@ class _PopularGrid extends StatelessWidget {
           children: items.map((item) {
             final map = _asMap(item);
             final image = _posterUrl(map);
+            final movieId = parseMovieId(map);
             return InkWell(
-              onTap: () => context.push('/play', extra: {'id': map['id']}),
+              onTap: movieId == null
+                  ? null
+                  : () => context.push('/play', extra: {'id': movieId}),
               borderRadius: BorderRadius.circular(8),
               child: SizedBox(
                 width: width,
@@ -857,8 +861,11 @@ class _SearchResultItem extends StatelessWidget {
     final map = _asMap(item);
     final image = _posterUrl(map);
     final tags = _tagNames(map);
+    final movieId = parseMovieId(map);
     return InkWell(
-      onTap: () => context.push('/play', extra: {'id': map['id']}),
+      onTap: movieId == null
+          ? null
+          : () => context.push('/play', extra: {'id': movieId}),
       child: Container(
         height: 136,
         padding: EdgeInsets.symmetric(horizontal: 15, vertical: 8),

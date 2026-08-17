@@ -16,22 +16,29 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yogotv/adjust_tracking.dart';
 import 'package:yogotv/api.dart';
+import 'package:yogotv/api_diagnostics.dart';
 import 'package:yogotv/app_config.dart';
 import 'package:yogotv/from_source.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/states/user.dart';
+import 'package:yogotv/vip_content_refresh.dart';
 
 class Global {
   static const bool webPreview =
       kIsWeb && bool.fromEnvironment('YOGO_WEB_PREVIEW');
   static const bool apiVerboseLogs = bool.fromEnvironment('API_VERBOSE_LOGS');
+  static bool get apiDiagnosticsEnabled =>
+      apiVerboseLogs && (cachedUserState()?.admin ?? 0) > 0;
   static const MethodChannel _deviceChannel = MethodChannel(
     'yogotv.com/device',
   );
   static final GlobalKey appKey = GlobalKey();
   static final ValueNotifier<int> watchHistoryUpdates = ValueNotifier<int>(0);
-  static final Logger logger = Logger(level: Level.debug);
+  static final Logger logger = Logger(
+    filter: DevelopmentFilter(),
+    level: Level.debug,
+  );
   static final int time = DateTime.now().millisecondsSinceEpoch;
   static late final SharedPreferences sp;
   static late final Dio dio;
@@ -213,7 +220,7 @@ class Global {
         showError: false,
       );
       if (result.c == 0) {
-        await cacheUserInfo(result.d);
+        await cacheUserInfo(result.d, detectVipChange: true);
         return;
       }
       if (result.m == 'Authentication Failure.') {
@@ -328,7 +335,9 @@ class Global {
     String? token,
     String? avatarUrl,
     bool clearAvatar = false,
+    bool detectVipChange = false,
   }) async {
+    final previousUser = detectVipChange ? cachedUserState() : null;
     final map = _extractUserInfoMap(info);
     if (map.isEmpty) {
       return null;
@@ -367,7 +376,16 @@ class Global {
         await sp.setString(_avatarUrlKey, avatarUrl);
       }
     }
-    return userStateFromInfo(map, avatarUrl: sp.getString(_avatarUrlKey) ?? '');
+    final value = userStateFromInfo(
+      map,
+      avatarUrl: sp.getString(_avatarUrlKey) ?? '',
+    );
+    if (previousUser != null &&
+        VipContentRefresh.statusChanged(previousUser.vip, value.vip)) {
+      logger.d('token detected vip change ${previousUser.vip} -> ${value.vip}');
+      VipContentRefresh.markVipChanged();
+    }
+    return value;
   }
 
   static Map<String, dynamic> _extractUserInfoMap(dynamic value) {
@@ -533,7 +551,12 @@ class Global {
   }
 
   static void Function() error(String message) {
+    final canCopyApiLogs = apiDiagnosticsEnabled && ApiDiagnostics.hasEntries;
     return BotToast.showCustomText(
+      duration: canCopyApiLogs ? const Duration(seconds: 30) : null,
+      clickClose: false,
+      ignoreContentClick: false,
+      onlyOne: true,
       toastBuilder: (cancel) {
         return Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -550,6 +573,26 @@ class Global {
                 children: [
                   Icon(LucideIcons.circleX200, size: 48, color: Colors.red),
                   Text(message, style: TextStyle(fontSize: 16)),
+                  if (canCopyApiLogs)
+                    TextButton.icon(
+                      onPressed: () async {
+                        final diagnostics = ApiDiagnostics.export(
+                          version: packageInfo.version,
+                          buildNumber: packageInfo.buildNumber,
+                        );
+                        await Clipboard.setData(
+                          ClipboardData(text: diagnostics),
+                        );
+                        cancel();
+                        success('API logs copied');
+                      },
+                      icon: const Icon(Icons.copy, size: 18),
+                      label: const Text('Copy API logs'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: const Color(0xffff3d5d),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -682,7 +725,7 @@ class Global {
           showError: false,
         );
         if (result.c == 0) {
-          final value = await cacheUserInfo(result.d);
+          final value = await cacheUserInfo(result.d, detectVipChange: true);
           await AdjustTracking.markTokenAdidSynced(
             submittedParams: submittedAdjustParams,
           );
@@ -760,7 +803,7 @@ class Global {
         retryOnAuthFailure: false,
       );
       if (result.c == 0) {
-        final value = await cacheUserInfo(result.d);
+        final value = await cacheUserInfo(result.d, detectVipChange: true);
         await AdjustTracking.markTokenAdidSynced(
           submittedParams: submittedAdjustParams,
         );

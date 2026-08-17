@@ -42,6 +42,7 @@ import 'package:yogotv/states/main.dart';
 import 'package:yogotv/states/restart.dart';
 import 'package:yogotv/states/user.dart';
 import 'package:yogotv/video_playback_session.dart';
+import 'package:yogotv/vip_content_refresh.dart';
 
 Future main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
@@ -400,6 +401,8 @@ class _Main extends State<Main> {
   StreamSubscription<void>? _adjustAttributionListener;
   Timer? _aliveTimer;
   final Set<int> _loadedTabs = {0, 1};
+  int _homeContentGeneration = 0;
+  int _forYouContentGeneration = 0;
   bool _loading = true;
   bool _appServicesReady = false;
   bool _appIsForeground = true;
@@ -689,8 +692,19 @@ class _Main extends State<Main> {
     if (current != value) {
       VideoPlaybackSession.silenceAllNow();
     }
+    final refreshHome = value == 0 && VipContentRefresh.takeHome();
+    final refreshForYou = value == 1 && VipContentRefresh.takeForYou();
+    if (refreshHome) {
+      invalidateHomeContentAfterVipChange();
+    }
     setState(() {
       _loadedTabs.add(value);
+      if (refreshHome) {
+        _homeContentGeneration++;
+      }
+      if (refreshForYou) {
+        _forYouContentGeneration++;
+      }
     });
     context.read<MainState>().setIndex(value);
   }
@@ -712,9 +726,14 @@ class _Main extends State<Main> {
                     child: IndexedStack(
                       index: state.current,
                       children: [
-                        _loadedTabs.contains(0) ? Home() : SizedBox.shrink(),
+                        _loadedTabs.contains(0)
+                            ? Home(key: ValueKey(_homeContentGeneration))
+                            : SizedBox.shrink(),
                         _loadedTabs.contains(1)
-                            ? Recommend(active: state.current == 1)
+                            ? Recommend(
+                                key: ValueKey(_forYouContentGeneration),
+                                active: state.current == 1,
+                              )
                             : SizedBox.shrink(),
                         _loadedTabs.contains(2)
                             ? MyList(load: state.current == 2)

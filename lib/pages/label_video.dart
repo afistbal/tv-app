@@ -7,6 +7,7 @@ import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/movie_id.dart';
 
 class LabelVideo extends StatefulWidget {
   const LabelVideo({super.key, required this.title, required this.tagId});
@@ -267,7 +268,7 @@ class _LabelVideoItem extends StatelessWidget {
     final image = imagePath.isEmpty ? '' : Global.static(imagePath);
     final description = _text(map['introduction']);
     final tags = _tagLine(map);
-    final id = map['id'] ?? map['movie_id'] ?? map['movieId'] ?? map['moveId'];
+    final id = parseMovieId(map);
     return InkWell(
       onTap: id == null ? null : () => context.push('/play', extra: {'id': id}),
       child: Padding(

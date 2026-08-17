@@ -9,6 +9,7 @@ import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/movie_id.dart';
 
 class MyList extends StatefulWidget {
   const MyList({super.key, required this.load});
@@ -562,8 +563,7 @@ class _MyListContentState extends State<_MyListContent>
     if (item is! Map) {
       return;
     }
-    final id =
-        item['movie_id'] ?? item['movieId'] ?? item['moveId'] ?? item['id'];
+    final id = parseMovieId(item);
     if (id == null) {
       return;
     }

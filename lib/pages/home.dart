@@ -11,6 +11,7 @@ import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
+import 'package:yogotv/movie_id.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -974,6 +975,15 @@ void refreshHomePopularAfterAttributionSync() {
   _homePopularRefreshSignal.value++;
 }
 
+void invalidateHomeContentAfterVipChange() {
+  for (final tab in const ['popular', 'new']) {
+    _discoverCacheRevisions[tab] = (_discoverCacheRevisions[tab] ?? 0) + 1;
+  }
+  _discoverCache.clear();
+  _discoverPrefetches.clear();
+  _categoryCache = null;
+}
+
 Future<void> _prefetchMovieGridTab(String tab) {
   if (_discoverCache.containsKey(tab)) {
     return Future.value();
@@ -1053,7 +1063,7 @@ void _openPlay(BuildContext context, dynamic item) {
     return;
   }
 
-  final id = item['id'] ?? item['movie_id'];
+  final id = parseMovieId(item);
   if (id == null) {
     return;
   }

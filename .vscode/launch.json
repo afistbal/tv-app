@@ -11,6 +11,7 @@
         "--web-hostname=localhost",
         "--web-port=8084",
         "--dart-define=YOGO_WEB_PREVIEW=true",
+        "--dart-define=API_BASE_URL=https://i.yogoshort.com/api/",
         "--dart-define=API_VERBOSE_LOGS=true"
       ]
     },

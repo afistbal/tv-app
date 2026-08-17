@@ -2,24 +2,25 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:yogotv/components/lazy_image.dart';
 import 'package:yogotv/global.dart';
+import 'package:yogotv/movie_id.dart';
 
 class FilmItem extends StatelessWidget {
-  final int id;
+  final int? id;
   final double width;
   final double height;
   final String image;
   final String title;
   final bool recommend;
 
-  const FilmItem({
+  FilmItem({
     super.key,
-    required this.id,
+    required Object? id,
     required this.width,
     required this.height,
     required this.image,
     required this.title,
     required this.recommend,
-  });
+  }) : id = parseMovieId(id);
 
   @override
   Widget build(BuildContext context) {
@@ -29,7 +30,10 @@ class FilmItem extends StatelessWidget {
         //   context.push('/recommend', extra: {'id': id});
         // }
 
-        context.push('/play', extra: {'id': id});
+        final movieId = id;
+        if (movieId != null) {
+          context.push('/play', extra: {'id': movieId});
+        }
       },
       child: Container(
         width: width,

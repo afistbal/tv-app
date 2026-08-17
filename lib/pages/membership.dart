@@ -16,6 +16,7 @@ import 'package:yogotv/components/loading.dart';
 import 'package:yogotv/global.dart';
 import 'package:yogotv/i18n/strings.g.dart';
 import 'package:yogotv/movie_cover.dart';
+import 'package:yogotv/movie_id.dart';
 import 'package:yogotv/payment_diagnostics.dart';
 import 'package:yogotv/purchase.dart';
 import 'package:yogotv/states/user.dart';
@@ -2050,7 +2051,7 @@ void _openPlay(BuildContext context, dynamic item) {
   if (item is! Map) {
     return;
   }
-  final id = item['id'] ?? item['movie_id'];
+  final id = parseMovieId(item);
   if (id != null) {
     context.push('/play', extra: {'id': id});
   }

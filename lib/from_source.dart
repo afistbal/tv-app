@@ -48,7 +48,7 @@ class FromSourceValue {
     try {
       final params = Uri.splitQueryString(raw);
       final movieId = int.tryParse(
-        (params['movieId'] ?? params['id'] ?? '').trim(),
+        (params['movieId'] ?? params['movie_id'] ?? params['id'] ?? '').trim(),
       );
       if (movieId == null || movieId <= 0) return null;
 

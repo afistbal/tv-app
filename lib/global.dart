@@ -47,6 +47,7 @@ class Global {
   static bool delEnable = false;
   static bool tracking = false;
   static bool paused = false;
+  static bool _errorVisible = false;
   static int _pauseAt = 0;
   static bool _blockedAd = false;
   static const String _userInfoKey = 'user_info';
@@ -551,9 +552,16 @@ class Global {
   }
 
   static void Function() error(String message) {
+    if (_errorVisible) {
+      return () {};
+    }
+    _errorVisible = true;
     final canCopyApiLogs = apiDiagnosticsEnabled && ApiDiagnostics.hasEntries;
     return BotToast.showCustomText(
-      duration: canCopyApiLogs ? const Duration(seconds: 30) : null,
+      duration: const Duration(seconds: 2),
+      onClose: () {
+        _errorVisible = false;
+      },
       clickClose: false,
       ignoreContentClick: false,
       onlyOne: true,

@@ -94,8 +94,8 @@ Future<void> _initTrackingAfterAppBecomesActive() async {
     }
   }
 
-  await Global.initTracking();
   await AdjustTracking.init();
+  await Global.initTracking();
 }
 
 final _router = GoRouter(
